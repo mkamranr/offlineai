@@ -191,6 +191,7 @@ def _debug_enabled() -> bool:
 def _register_commands() -> None:
     from offlineai.cli.commands import (
         build,
+        diagnostics,
         import_bundle,
         init,
         inspect,
@@ -207,6 +208,7 @@ def _register_commands() -> None:
         import_bundle,
         registry_cmds,
         lifecycle,
+        diagnostics,
     ):
         module.register(app)
 
