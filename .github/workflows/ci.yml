@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The suite must never need the network. Any job that starts reaching out is a
+# bug in the product, not in CI.
+env:
+  OFFLINEAI_TEST_OFFLINE: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv venv --python 3.12
+      - run: uv pip install -e ".[dev,builder]"
+      - name: ruff
+        run: uv run ruff check src tests
+      - name: ruff format check
+        run: uv run ruff format --check src tests
+      - name: mypy
+        run: uv run mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv venv --python ${{ matrix.python-version }}
+      - run: uv pip install -e ".[dev,builder]"
+      - name: unit, security and integration tests (offline)
+        run: uv run pytest tests/unit tests/security tests/integration -v --cov=offlineai --cov-report=term-missing
+
+  airgap-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv venv --python 3.12
+      - run: uv pip install -e ".[dev,builder]"
+      - name: end-to-end install inside a network-isolated container
+        run: uv run pytest tests/airgap -v -m airgap_e2e

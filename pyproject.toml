@@ -1,0 +1,105 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "offlineai"
+version = "0.1.0"
+description = "Package complete AI workloads for deployment into air-gapped environments."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "The OfflineAI Authors" }]
+keywords = ["air-gapped", "offline", "ai", "packaging", "deployment", "sbom", "mlops"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Archiving :: Packaging",
+    "Topic :: System :: Software Distribution",
+]
+
+# Core runtime dependencies.
+#
+# These are installed on the AIR-GAPPED TARGET, so the list is deliberately
+# minimal and contains nothing that reaches for the network. `cryptography`
+# is here (not in [builder]) because the target must be able to VERIFY an
+# Ed25519 signature even though it never creates one.
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "packaging>=24.0",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+# Builder-only dependencies. Required on the internet-connected machine that
+# RESOLVES artifacts; never required to import, verify, install or run a bundle.
+builder = [
+    "huggingface-hub>=0.23",
+    "httpx>=0.27",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[project.scripts]
+offlineai = "offlineai.cli.main:run"
+
+[project.urls]
+Homepage = "https://github.com/offlineai/offlineai"
+Documentation = "https://github.com/offlineai/offlineai/tree/main/docs"
+
+# Artifact source plugins are discovered through this entry-point group, so
+# third parties can add sources without patching the CLI (spec section 49).
+[project.entry-points."offlineai.sources"]
+local = "offlineai.artifacts.sources.local:LocalSource"
+http = "offlineai.artifacts.sources.http:HttpSource"
+oci = "offlineai.artifacts.sources.oci:OciSource"
+huggingface = "offlineai.artifacts.sources.huggingface:HuggingFaceSource"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/offlineai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "airgap_e2e: end-to-end test requiring Docker; runs install inside --network none",
+    "needs_docker: requires a live Docker daemon",
+]
+filterwarnings = ["error::DeprecationWarning:offlineai.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PTH", "RET", "SIM", "TID", "ARG", "S"]
+ignore = [
+    "S603",  # subprocess call: we always pass argument lists, never shell=True
+    "S607",  # partial executable path: docker/pip/dpkg are resolved via PATH by design
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S108", "ARG001", "ARG002"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+files = ["src/offlineai"]
+
+[[tool.mypy.overrides]]
+module = ["huggingface_hub.*"]
+ignore_missing_imports = true
