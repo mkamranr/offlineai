@@ -16,6 +16,7 @@ from __future__ import annotations
 import platform
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from offlineai.artifacts.base import (
     SourceRef,
 )
 from offlineai.artifacts.cache import ArtifactCache
+from offlineai.artifacts.sources.http import HttpSource
+from offlineai.artifacts.sources.huggingface import HuggingFaceSource
 from offlineai.artifacts.sources.local import LocalSource
 from offlineai.artifacts.sources.oci import OciSource
 from offlineai.bundler.archive import BundleWriter
@@ -204,8 +207,14 @@ class BundleBuilder:
                 locator=locator,
                 name=model.name,
                 artifact_type=ArtifactType.MODEL,
+                options=_source_options(model.source),
             )
-            out.extend(self._fetch(source, request) for request in source.expand(ref))
+            license_id = _license_for(source, model.source)
+            for request in source.expand(ref):
+                resolved = self._fetch(source, request)
+                out.append(
+                    resolved if license_id is None else replace(resolved, license=license_id)
+                )
         return out
 
     def _resolve_containers(self, package: Package, base_dir: Path) -> list[ResolvedArtifact]:
@@ -284,9 +293,17 @@ class BundleBuilder:
             return registered
         if kind == "local":
             return LocalSource(base_dir)
+        if kind == "huggingface":
+            return HuggingFaceSource()
+        if kind == "http":
+            return HttpSource()
         raise SourceError(
             f"no artifact source is registered for {kind!r}",
-            details={"Available": ", ".join(sorted({"local", *self._sources}))},
+            details={
+                "Available": ", ".join(
+                    sorted({"local", "huggingface", "http", "oci", *self._sources})
+                )
+            },
             action="This source type is not available in this build of OfflineAI.",
         )
 
@@ -386,6 +403,29 @@ def _describe(artifacts: list[ResolvedArtifact], noun: str) -> str:
     cached = sum(1 for a in artifacts if a.cached)
     suffix = f", {cached} from cache" if cached else ""
     return f"{len(artifacts)} {noun}(s){suffix}"
+
+
+def _source_options(source: ModelSource) -> dict[str, object]:
+    """Per-source options carried from the package definition into expansion."""
+    options: dict[str, object] = {}
+    for attribute in ("revision", "include", "exclude", "sha256"):
+        value = getattr(source, attribute, None)
+        if value:
+            options[attribute] = value
+    return options
+
+
+def _license_for(source: ArtifactSource, model_source: ModelSource) -> str | None:
+    """Best-effort license id (section 37): informational, never a gate."""
+    reader = getattr(source, "license_for", None)
+    repo = getattr(model_source, "repo", None)
+    if reader is None or not repo:
+        return None
+    try:
+        value = reader(repo, getattr(model_source, "revision", None) or "main")
+    except Exception:  # noqa: BLE001 - metadata must never fail a build
+        return None
+    return str(value) if value else None
 
 
 def _locator_for(source: ModelSource) -> str:
