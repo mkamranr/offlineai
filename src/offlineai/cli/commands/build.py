@@ -39,6 +39,17 @@ def build(
             "and container layers are already compressed.",
         ),
     ] = Compression.NONE,
+    sign_key: Annotated[
+        Path | None,
+        typer.Option(
+            "--sign-key",
+            help="Ed25519 private key. Embeds the signature in the bundle header, "
+            "which is free at build time.",
+        ),
+    ] = None,
+    signer: Annotated[
+        str | None, typer.Option("--signer", help="Identity recorded in the signature.")
+    ] = None,
 ) -> None:
     """Build an .offlineai bundle from a package definition.
 
@@ -58,5 +69,11 @@ def build(
 
     output.line(f"Building package from {target}")
     output.line()
-    result = builder.build(target, output=output_path, compression=compression)
+    result = builder.build(
+        target,
+        output=output_path,
+        compression=compression,
+        sign_key=sign_key,
+        signer=signer,
+    )
     output.build_result(result)

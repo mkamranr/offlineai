@@ -13,6 +13,8 @@ starting over (section 43).
 
 from __future__ import annotations
 
+import base64
+import json
 import platform
 import sys
 from collections.abc import Callable
@@ -42,6 +44,8 @@ from offlineai.logging import get_logger
 from offlineai.resolver.package import load_package
 from offlineai.runtime.base import ContainerRuntime
 from offlineai.runtime.docker import DockerRuntime
+from offlineai.sbom.cyclonedx import license_report
+from offlineai.sbom.cyclonedx import to_json as sbom_json
 from offlineai.schema.manifest import (
     ArtifactType,
     BuilderInfo,
@@ -54,6 +58,7 @@ from offlineai.schema.manifest import (
 )
 from offlineai.schema.package import ModelSource, Package
 from offlineai.security.secrets import scan_for_secrets
+from offlineai.security.signing import load_private_key, sign_manifest
 from offlineai.utils.hashing import sha256_file
 
 __all__ = ["BundleBuilder"]
@@ -102,6 +107,8 @@ class BundleBuilder:
         *,
         output: Path | str | None = None,
         compression: Compression = Compression.NONE,
+        sign_key: Path | str | None = None,
+        signer: str | None = None,
     ) -> BuildResult:
         self.cache.ensure()
         self._steps = []
@@ -165,13 +172,32 @@ class BundleBuilder:
                 package, resolved, definition_hash, compression=compression
             )
 
-        # 9 - archive
+        # 9 - archive. The SBOM and signature are written into the header
+        # here, which is free; signing afterwards would mean rewriting the
+        # whole archive to insert 64 bytes.
         bundle_path = self._output_path(package, output)
+        sbom_bytes = sbom_json(manifest)
+        licenses_bytes = json.dumps(license_report(manifest), indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+
+        signature_bytes: bytes | None = None
+        public_key_bytes: bytes | None = None
+        if sign_key is not None:
+            key = load_private_key(sign_key)
+            envelope = sign_manifest(manifest, key, signer=signer)
+            signature_bytes = envelope.to_bytes()
+            public_key_bytes = base64.b64decode(envelope.public_key)
+
         with self._step(9) as step:
             with BundleWriter(bundle_path, compression=compression) as writer:
                 writer.write_header(
                     manifest=manifest,
                     package_yaml=definition_path.read_bytes(),
+                    sbom=sbom_bytes,
+                    licenses=licenses_bytes,
+                    signature=signature_bytes,
+                    public_key=public_key_bytes,
                     docs=_collect_docs(base_dir),
                 )
                 for artifact in resolved:

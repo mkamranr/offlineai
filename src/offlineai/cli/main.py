@@ -197,6 +197,7 @@ def _register_commands() -> None:
         inspect,
         lifecycle,
         registry_cmds,
+        security_cmds,
         verify,
     )
 
@@ -209,6 +210,7 @@ def _register_commands() -> None:
         registry_cmds,
         lifecycle,
         diagnostics,
+        security_cmds,
     ):
         module.register(app)
 

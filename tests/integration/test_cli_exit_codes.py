@@ -54,7 +54,9 @@ def home(tmp_path: Path) -> Path:
 def package(tmp_path: Path) -> Path:
     source = tmp_path / "pkg"
     (source / "weights").mkdir(parents=True)
-    (source / "weights" / "model.safetensors").write_bytes(b"weights" * 2000)
+    # Large enough that a proportional offset lands inside the artifact
+    # region rather than in the header or the tar padding.
+    (source / "weights" / "model.safetensors").write_bytes(b"weights" * 40_000)
     (source / "offlineai.yaml").write_text(
         """\
 apiVersion: offlineai/v1
@@ -94,12 +96,33 @@ class TestExitCodes:
         """The regression that motivated this file: the failure was printed but
         the process still exited 0."""
         data = bytearray(bundle.read_bytes())
-        data[int(len(data) * 0.85)] ^= 0xFF
+        data[int(len(data) * 0.5)] ^= 0xFF
         bundle.write_bytes(bytes(data))
 
         result = run_cli("verify", str(bundle), home=home)
         assert result.returncode == ExitCode.VERIFICATION_FAILURE
         assert "FAILED" in result.stdout + result.stderr
+
+    def test_corruption_in_trailing_padding_is_not_reported(self, bundle: Path, home: Path) -> None:
+        """Documented limitation, asserted so nobody "fixes" it by accident.
+
+        A tar ends with zero blocks and block-factor padding. Those bytes carry
+        no content: no artifact and no manifest field lives there, so flipping
+        one changes the file's SHA-256 while leaving everything the manifest
+        describes intact. Verification covers content, which is what the
+        signature chains to. Whole-file integrity is a separate concern, served
+        by the SHA-256 that `build` prints for the operator to compare after
+        transfer.
+        """
+        data = bytearray(bundle.read_bytes())
+        # The final block is padding in every tar we produce.
+        data[-16] ^= 0xFF
+        bundle.write_bytes(bytes(data))
+
+        result = run_cli("verify", str(bundle), home=home)
+        assert result.returncode == ExitCode.SUCCESS, (
+            "padding is not content; verification is about what the manifest describes"
+        )
 
     def test_corrupt_header_is_three(self, bundle: Path, home: Path) -> None:
         data = bytearray(bundle.read_bytes())
