@@ -29,6 +29,7 @@ from pydantic import (
 
 __all__ = [
     "API_VERSION",
+    "PORT_RE",
     "ContainerSpec",
     "GpuRequirement",
     "HardwareSpec",
@@ -52,8 +53,9 @@ _VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*([-+][0-9A-Za-z.-]+)?$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# host:container, optionally ip-qualified and optionally /proto.
-_PORT_RE = re.compile(
+#: host:container, optionally ip-qualified and optionally /proto.
+#: Exported so the override schema validates ports identically.
+PORT_RE = re.compile(
     r"^(?:(?P<ip>\d{1,3}(?:\.\d{1,3}){3}):)?"
     r"(?P<host>\d{1,5}):(?P<container>\d{1,5})"
     r"(?:/(?P<proto>tcp|udp))?$"
@@ -232,7 +234,7 @@ class ServiceSpec(_Strict):
     @classmethod
     def _check_ports(cls, values: list[str]) -> list[str]:
         for value in values:
-            match = _PORT_RE.match(value)
+            match = PORT_RE.match(value)
             if not match:
                 raise ValueError(
                     f"{value!r} is not a valid port mapping. Use 'HOST:CONTAINER', "
@@ -246,9 +248,7 @@ class ServiceSpec(_Strict):
 
     def host_ports(self) -> list[int]:
         """Host-side ports, for reporting endpoints after start."""
-        return [
-            int(match.group("host")) for value in self.ports if (match := _PORT_RE.match(value))
-        ]
+        return [int(match.group("host")) for value in self.ports if (match := PORT_RE.match(value))]
 
 
 class VolumeSpec(_Strict):

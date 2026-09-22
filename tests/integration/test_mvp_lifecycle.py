@@ -730,3 +730,75 @@ class TestStatusClassification:
         # A second service that is not running makes the package genuinely partial.
         package.services.append(package.services[0].model_copy(update={"name": "sidecar"}))
         assert RuntimeManager(target_runtime).status(package).status == "DEGRADED"
+
+
+class TestEndpointReporting:
+    """Reported endpoints must be the ports actually bound, not the declared
+    ones. A --config override remaps them, and telling an operator to curl a
+    port nothing is listening on is worse than saying nothing."""
+
+    def test_endpoints_follow_a_port_override(
+        self, bundle: Path, target_home: Settings, target_runtime: FakeRuntime
+    ) -> None:
+        import yaml
+
+        from offlineai.schema.overrides import Overrides
+        from offlineai.schema.package import Package
+
+        registry = Registry(target_home)
+        registry.import_bundle(bundle)
+        overrides = Overrides.model_validate({"services": {"app": {"ports": ["8099:8000"]}}})
+        Installer(target_home, registry, target_runtime).install(
+            "hello-ai", health_sleep=0, overrides=overrides
+        )
+
+        record = registry.require("hello-ai")
+        package = Package.model_validate(yaml.safe_load(record.package_yaml))
+        report = RuntimeManager(target_runtime).status(package)
+
+        assert report.endpoints == ["http://localhost:8099"], (
+            f"reported {report.endpoints}; the package declares 8000 but the "
+            "override moved it to 8099"
+        )
+
+    def test_the_container_is_started_on_the_overridden_port(
+        self, bundle: Path, target_home: Settings, target_runtime: FakeRuntime
+    ) -> None:
+        from offlineai.schema.overrides import Overrides
+
+        registry = Registry(target_home)
+        registry.import_bundle(bundle)
+        overrides = Overrides.model_validate({"services": {"app": {"ports": ["8099:8000"]}}})
+        Installer(target_home, registry, target_runtime).install(
+            "hello-ai", health_sleep=0, overrides=overrides
+        )
+        container = target_runtime.containers[container_name("hello-ai", "app")]
+        assert container.spec.ports == ["8099:8000"]
+
+    def test_declared_ports_are_used_when_there_is_no_override(
+        self, bundle: Path, target_home: Settings, target_runtime: FakeRuntime
+    ) -> None:
+        import yaml
+
+        from offlineai.schema.package import Package
+
+        registry = Registry(target_home)
+        registry.import_bundle(bundle)
+        Installer(target_home, registry, target_runtime).install("hello-ai", health_sleep=0)
+        record = registry.require("hello-ai")
+        package = Package.model_validate(yaml.safe_load(record.package_yaml))
+        assert RuntimeManager(target_runtime).status(package).endpoints == ["http://localhost:8000"]
+
+    def test_environment_overrides_reach_the_container(
+        self, bundle: Path, target_home: Settings, target_runtime: FakeRuntime
+    ) -> None:
+        from offlineai.schema.overrides import Overrides
+
+        registry = Registry(target_home)
+        registry.import_bundle(bundle)
+        overrides = Overrides.model_validate({"environment": {"DEPLOYMENT_SITE": "site-b"}})
+        Installer(target_home, registry, target_runtime).install(
+            "hello-ai", health_sleep=0, overrides=overrides
+        )
+        container = target_runtime.containers[container_name("hello-ai", "app")]
+        assert container.spec.environment["DEPLOYMENT_SITE"] == "site-b"

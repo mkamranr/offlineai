@@ -5,6 +5,9 @@ Sections 26 to 28.
 
 from __future__ import annotations
 
+import shutil
+from contextlib import nullcontext
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -18,8 +21,14 @@ from offlineai.installer.rollback import rollback_installation
 from offlineai.registry.registry import PackageRecord, Registry
 from offlineai.runtime.base import ContainerRuntime
 from offlineai.runtime.docker import DockerRuntime
-from offlineai.runtime.manager import RuntimeManager, image_overrides_from
+from offlineai.runtime.manager import (
+    RuntimeManager,
+    image_overrides_from,
+    network_name,
+)
+from offlineai.schema.overrides import load_overrides
 from offlineai.schema.package import Package
+from offlineai.security.offline import strict_offline_guard
 
 
 def register(app: typer.Typer) -> None:
@@ -30,6 +39,7 @@ def register(app: typer.Typer) -> None:
     _register(app, "status", status)
     _register(app, "logs", logs)
     _register(app, "rollback", rollback)
+    _register(app, "uninstall", uninstall)
 
 
 def _runtime(context: Context) -> ContainerRuntime:
@@ -102,15 +112,36 @@ def install(
         str | None,
         typer.Option("--gpus", help="Comma-separated GPU device ids, e.g. --gpus 0,1"),
     ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="Local overrides (ports, GPUs, environment) applied without modifying the bundle.",
+        ),
+    ] = None,
+    strict_offline: Annotated[
+        bool,
+        typer.Option(
+            "--strict-offline",
+            help="Refuse any network access during installation.",
+        ),
+    ] = False,
 ) -> None:
     """Install an imported package, then start and health-check it.
 
     Pass a bundle path to import and install in one step.
+
+    Examples:
+
+      offlineai install qwen3-30b
+
+      offlineai install qwen3-30b --gpus 0,1 --config ./server-config.yaml
+
+      offlineai install ./qwen3-30b-1.0.0.offlineai --strict-offline
     """
     context: Context = ctx.obj
     registry = Registry(context.settings)
-
-    from pathlib import Path
 
     candidate = Path(name)
     if candidate.is_file() and candidate.suffix == ".offlineai":
@@ -122,13 +153,22 @@ def install(
         name, version = imported.package, imported.version
         context.output.line()
 
-    installer = Installer(context.settings, registry, _runtime(context))
-    result = installer.install(
-        name,
-        version=version,
-        start=not no_start,
-        gpu_device_ids=gpus.split(",") if gpus else None,
+    overrides = load_overrides(config) if config else None
+
+    guard = (
+        strict_offline_guard()
+        if (strict_offline or context.settings.offline.strict)
+        else nullcontext()
     )
+    installer = Installer(context.settings, registry, _runtime(context))
+    with guard:
+        result = installer.install(
+            name,
+            version=version,
+            start=not no_start,
+            gpu_device_ids=gpus.split(",") if gpus else None,
+            overrides=overrides,
+        )
     _report_install(context, result)
 
 
@@ -249,6 +289,64 @@ def logs(
     context.output.emit_raw({"package": name, "logs": text})
     if not context.output.fmt.json:
         context.output.console.print(text, end="", highlight=False, markup=False)
+
+
+def uninstall(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="Package name.")],
+    version: Annotated[str | None, typer.Option("--version")] = None,
+    keep_data: Annotated[
+        bool,
+        typer.Option("--keep-data", help="Leave installed models and wheels on disk."),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Do not prompt.")] = False,
+) -> None:
+    """Stop a package and remove what the install created.
+
+    Does not remove the package from the registry - use 'offlineai remove' for
+    that - and never touches host directories declared as volumes, which hold
+    operator data rather than anything OfflineAI put there.
+    """
+    context: Context = ctx.obj
+    record, package = _load(context, name, version)
+    runtime = _runtime(context)
+
+    if (
+        not yes
+        and not context.output.fmt.json
+        and not typer.confirm(f"Stop and uninstall {record.identifier}?")
+    ):
+        context.output.line("Cancelled.")
+        return
+
+    stopped = RuntimeManager(runtime).stop(package, remove=True)
+    runtime.remove_network(network_name(record.name))
+
+    removed_paths: list[str] = []
+    if not keep_data:
+        installed = context.settings.data_dir / "installed" / record.name
+        if installed.is_dir():
+            shutil.rmtree(installed, ignore_errors=True)
+            removed_paths.append(str(installed))
+
+    context.output.emit_raw(
+        {
+            "package": record.name,
+            "stopped": stopped,
+            "removed_paths": removed_paths,
+            "kept_data": keep_data,
+        }
+    )
+    context.output.line(f"Uninstalled {record.identifier}")
+    for service in stopped:
+        context.output.line(f"  stopped  {service}")
+    for path in removed_paths:
+        context.output.line(f"  removed  {path}")
+    context.output.line()
+    context.output.line(
+        f"The package is still in the registry. Remove it entirely with:\n"
+        f"  offlineai remove {record.name}"
+    )
 
 
 def rollback(

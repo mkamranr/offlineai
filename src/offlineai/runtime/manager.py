@@ -221,18 +221,24 @@ class RuntimeManager:
         for service in _ordered_services(package):
             name = container_name(package.metadata.name, service.name)
             state = self.runtime.container_state(name)
+            # Report the ports the container is ACTUALLY bound to, not the ones
+            # the package declared. A --config override remaps them, and telling
+            # an operator to curl a port nothing is listening on is worse than
+            # saying nothing at all.
+            bound = _bound_host_ports(state.ports)
             services.append(
                 ServiceState(
                     name=service.name,
                     container=name,
                     status=state.status,
                     health=state.health,
-                    ports=service.ports,
+                    ports=[str(p) for p in bound] or service.ports,
                     exit_code=state.exit_code,
                 )
             )
             if state.running:
-                endpoints.extend(f"http://localhost:{port}" for port in service.host_ports())
+                for port in bound or service.host_ports():
+                    endpoints.append(f"http://localhost:{port}")
 
         # Classified by how many services are running, not by which exact
         # container state they are in. `stop` without --remove leaves a
@@ -311,6 +317,20 @@ class RuntimeManager:
                 time.sleep(interval)
 
         return False, f"health check failed after {check.retries} attempts: {last}"
+
+
+def _bound_host_ports(ports: dict[str, str]) -> list[int]:
+    """Extract host ports from a runtime's port map.
+
+    Values look like ``"0.0.0.0:8099"`` or ``":8099"`` depending on the engine
+    and the binding, so the host port is whatever follows the last colon.
+    """
+    out: list[int] = []
+    for binding in ports.values():
+        candidate = binding.rsplit(":", 1)[-1].strip()
+        if candidate.isdigit():
+            out.append(int(candidate))
+    return sorted(set(out))
 
 
 def image_overrides_from(manifest: Manifest) -> dict[str, str]:

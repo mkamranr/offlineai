@@ -96,6 +96,9 @@ ignore = [
 # The fake runtime must match the ContainerRuntime protocol exactly, which
 # means accepting arguments an in-memory implementation has no use for.
 "src/offlineai/runtime/fake.py" = ["ARG002"]
+# The offline guard replaces socket functions, so it must accept their full
+# signatures even though it raises before using most of them.
+"src/offlineai/security/offline.py" = ["ARG001"]
 
 [tool.mypy]
 python_version = "3.11"

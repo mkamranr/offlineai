@@ -12,7 +12,6 @@ Steps that change the system journal their own undo actions as they go, so
 
 from __future__ import annotations
 
-import platform
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -28,6 +27,8 @@ from offlineai.errors import (
     InsufficientDiskError,
     MissingArtifactError,
 )
+from offlineai.hardware.compat import check_compatibility, estimate_storage
+from offlineai.hardware.detector import HardwareDetector
 from offlineai.installer.transaction import (
     InstallState,
     InstallTransaction,
@@ -40,6 +41,7 @@ from offlineai.registry.registry import PackageRecord, Registry
 from offlineai.runtime.base import ContainerRuntime
 from offlineai.runtime.manager import RuntimeManager, image_overrides_from, network_name
 from offlineai.schema.manifest import ArtifactType
+from offlineai.schema.overrides import Overrides
 from offlineai.schema.package import Package
 from offlineai.utils.fs import free_space
 from offlineai.utils.sizes import format_bytes
@@ -94,9 +96,20 @@ class Installer:
         gpu_device_ids: list[str] | None = None,
         environment: dict[str, str] | None = None,
         health_sleep: float | None = None,
+        overrides: Overrides | None = None,
     ) -> InstallResult:
         record = self.registry.require(name, version)
         package = _package_from(record)
+
+        # Local overrides adapt the bundle to this machine without modifying
+        # it, so its checksums and signature stay meaningful (section 29).
+        if overrides is not None:
+            warnings = overrides.validate_against({s.name for s in package.services})
+            if gpu_device_ids is None:
+                gpu_device_ids = overrides.gpu_device_ids
+            environment = {**(environment or {}), **overrides.environment}
+        else:
+            warnings = []
 
         install_id = next_install_id(self.registry.db_path)
         txn = InstallTransaction(self.registry.db_path, install_id, record.id)
@@ -107,6 +120,7 @@ class Installer:
             version=record.version,
             installation_id=install_id,
             state=InstallState.PENDING,
+            warnings=warnings,
         )
 
         try:
@@ -131,6 +145,7 @@ class Installer:
                     environment,
                     image_overrides_from(record.manifest()),
                     wheel_root,
+                    overrides,
                 )
 
                 txn.set_state(InstallState.HEALTH_CHECK)
@@ -160,114 +175,61 @@ class Installer:
     # -- pipeline stages -------------------------------------------------
 
     def _preflight(self, record: PackageRecord, result: InstallResult) -> None:
+        """Evaluate the host against the bundle's requirements.
+
+        Delegates to the same checker `offlineai check` uses, so the two can
+        never disagree about whether a host qualifies - an operator who runs
+        check and then install must not get a different answer.
+        """
         manifest = record.manifest()
-        checks = result.checks
+        hardware = HardwareDetector(disk_path=self.settings.data_dir).detect()
+        runtime = self.runtime.availability()
+        storage = estimate_storage(
+            manifest,
+            bundle_bytes=record.total_size,
+            available_bytes=free_space(self.settings.data_dir),
+        )
+        compatibility = check_compatibility(manifest, hardware, runtime=runtime, storage=storage)
+        result.checks.extend(compatibility.checks)
+        result.warnings.extend(compatibility.warnings)
+        result.dev_mode = not hardware.is_linux
 
-        host_os = platform.system().lower()
-        if host_os != SUPPORTED_OS:
-            # Degraded development mode. Sections 21 and 77.12 make Linux the
-            # supported target; running elsewhere is allowed but must be
-            # labelled, never quietly reported as fine.
-            result.dev_mode = True
-            checks.append(
-                CheckResult(
-                    name="Operating system",
-                    status=CheckStatus.WARNING,
-                    detail=f"{host_os} is not a supported target platform (DEV MODE)",
-                )
-            )
-            result.warnings.append(
-                f"Running on {host_os}. This is a development convenience, not a "
-                "supported deployment target; OS package and GPU steps will be skipped."
-            )
-        else:
-            checks.append(
-                CheckResult(name="Operating system", status=CheckStatus.OK, detail=host_os)
-            )
-
-        machine = platform.machine().lower()
-        host_arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
-        wanted = {p.split("/")[-1] for p in manifest.platforms} or {"amd64"}
-        if host_arch in wanted:
-            checks.append(
-                CheckResult(name="CPU architecture", status=CheckStatus.OK, detail=host_arch)
-            )
-        else:
-            raise HardwareIncompatibleError(
-                "the bundle does not support this CPU architecture",
-                details={"Required": ", ".join(sorted(wanted)), "Detected": host_arch},
-                action="Rebuild the bundle for this architecture on the builder machine.",
-            )
-
-        required = manifest.total_size
-        available = free_space(self.settings.data_dir)
-        if required > available:
+        if not storage.sufficient:
             raise InsufficientDiskError(
                 "not enough free space to install this package",
                 details={
-                    "Required": format_bytes(required),
-                    "Available": format_bytes(available),
+                    "Required": format_bytes(storage.recommended_bytes),
+                    "Available": format_bytes(storage.available_bytes),
                 },
                 action="Free space, or install onto another volume with --data-dir.",
             )
-        checks.append(
-            CheckResult(
-                name="Disk space",
-                status=CheckStatus.OK,
-                detail=f"{format_bytes(available)} available",
-            )
-        )
 
-        availability = self.runtime.availability()
-        if not availability.available:
+        if not runtime.available and manifest.requirements.docker is not None:
             raise InstallationError(
                 "no usable container runtime",
-                details={"Detail": availability.detail or "unavailable"},
+                details={"Detail": runtime.detail or "unavailable"},
                 action="Install and start Docker, then try again.",
             )
-        checks.append(
-            CheckResult(
-                name="Container runtime",
-                status=CheckStatus.OK,
-                detail=f"{self.runtime.kind} {availability.version}",
-            )
-        )
 
-        gpu = manifest.requirements.gpu
-        if gpu is None:
-            checks.append(
-                CheckResult(name="GPU", status=CheckStatus.SKIPPED, detail="not required")
-            )
-        elif result.dev_mode:
-            checks.append(
-                CheckResult(
-                    name="GPU",
-                    status=CheckStatus.SKIPPED,
-                    detail=f"not evaluated on {host_os}",
-                )
-            )
-        elif not availability.gpu_support:
-            checks.append(
-                CheckResult(
-                    name="GPU",
-                    status=CheckStatus.WARNING,
-                    detail="the container runtime reports no GPU support",
-                )
-            )
-            result.warnings.append(
-                "This package requests a GPU but the container runtime exposes none. "
-                "The workload may fail to start."
-            )
-        else:
-            checks.append(
-                CheckResult(name="GPU", status=CheckStatus.OK, detail=gpu.vendor or "present")
+        blocking = [
+            c
+            for c in compatibility.failures
+            # In dev mode the GPU and OS checks are informational; the platform
+            # is already labelled unsupported and the operator has been told.
+            if not (result.dev_mode and c.name.startswith(("GPU", "Operating")))
+        ]
+        if blocking:
+            raise HardwareIncompatibleError(
+                "this host does not satisfy the bundle's requirements",
+                details={c.name: c.detail or "failed" for c in blocking},
+                action="Run 'offlineai check' for the full report.",
             )
 
         missing_secrets = [
             secret for secret in manifest.required_secrets if not _env_present(secret)
         ]
         if missing_secrets:
-            checks.append(
+            result.checks.append(
                 CheckResult(
                     name="Required secrets",
                     status=CheckStatus.WARNING,
@@ -275,8 +237,8 @@ class Installer:
                 )
             )
             result.warnings.append(
-                "These environment variables are declared as externally supplied and "
-                f"are not set: {', '.join(missing_secrets)}"
+                "These environment variables are declared as externally supplied "
+                f"and are not set: {', '.join(missing_secrets)}"
             )
 
     def _load_images(
@@ -552,6 +514,7 @@ class Installer:
         environment: dict[str, str] | None,
         image_overrides: dict[str, str] | None = None,
         wheel_root: Path | None = None,
+        overrides: Overrides | None = None,
     ) -> None:
         if not package.services:
             result.checks.append(
@@ -573,6 +536,15 @@ class Installer:
                 environment=environment,
                 image_overrides=image_overrides,
                 wheel_root=wheel_root,
+                port_overrides=(
+                    {
+                        name: ports
+                        for name in (s.name for s in package.services)
+                        if (ports := overrides.ports_for(name)) is not None
+                    }
+                    if overrides
+                    else None
+                ),
             )
             for name in names:
                 inverses.append(Inverse(action=InverseAction.REMOVE_CONTAINER, target=name))

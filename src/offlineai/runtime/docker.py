@@ -159,7 +159,8 @@ class DockerRuntime:
             devices = ",".join(spec.gpu_device_ids) if spec.gpu_device_ids else "all"
             args += ["--gpus", f'"device={devices}"' if spec.gpu_device_ids else "all"]
         # Section 32: never let a run reach out for a missing image. If it is
-        # not already loaded, that is a bundle problem and must be said so.
+        # not already loaded that is a bundle problem, and it must be reported
+        # as one rather than papered over by a silent pull.
         args += ["--pull", "never"]
         args.append(spec.image)
         args += spec.command
