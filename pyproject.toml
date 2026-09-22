@@ -31,6 +31,13 @@ classifiers = [
 # Ed25519 signature even though it never creates one.
 dependencies = [
     "typer>=0.12",
+    # Declared explicitly because cli/main.py imports it directly. It used to
+    # arrive transitively through typer, but typer 0.27 dropped the dependency
+    # and click then reached this project only through huggingface-hub - a
+    # BUILDER-only extra. A core install, which is exactly what goes on the
+    # air-gapped target, therefore had no click and crashed on every
+    # invocation. Import it, declare it.
+    "click>=8.1",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.7",
