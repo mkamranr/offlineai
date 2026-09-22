@@ -190,6 +190,7 @@ def _debug_enabled() -> bool:
 # doing it at the top would be a cycle.
 def _register_commands() -> None:
     from offlineai.cli.commands import (
+        analysis,
         build,
         diagnostics,
         import_bundle,
@@ -211,6 +212,7 @@ def _register_commands() -> None:
         lifecycle,
         diagnostics,
         security_cmds,
+        analysis,
     ):
         module.register(app)
 
