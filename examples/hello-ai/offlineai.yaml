@@ -1,0 +1,52 @@
+# The smallest complete OfflineAI package: a Python HTTP service in a
+# container, with no model and no GPU. This is the package the MVP scenario
+# (specification section 73) builds, transfers, imports, installs and runs.
+apiVersion: offlineai/v1
+
+kind: Package
+
+metadata:
+  name: hello-ai
+  version: 1.0.0
+  description: A minimal containerised HTTP service, packaged for an air gap.
+  license: Apache-2.0
+
+runtime:
+  type: docker
+
+architecture:
+  - amd64
+
+containers:
+  - name: app
+    image: python:3.12-slim
+    platform: linux/amd64
+    dockerfile: Dockerfile
+
+python:
+  requirements:
+    - requirements.txt
+  version: "3.12"
+  platform: linux
+  architecture: amd64
+
+environment:
+  # Belt and braces: even this trivial service declares that it must not
+  # reach out at runtime.
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
+services:
+  - name: app
+    container: app
+    ports:
+      - "8000:8000"
+
+install:
+  healthcheck:
+    command:
+      - python
+      - -c
+      - "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"
+    retries: 12
+    interval_seconds: 5

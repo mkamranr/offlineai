@@ -1,0 +1,2 @@
+# Intentionally empty: hello-ai uses only the standard library, so the example
+# can be built anywhere. See examples/rag-stack for a real dependency closure.

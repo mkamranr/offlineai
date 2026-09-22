@@ -270,3 +270,39 @@ class TestLayoutHelpers:
         assert layout.artifact_path(ArtifactType.PYTHON_WHEEL, "fastapi.whl") == (
             "artifacts/python/wheels/fastapi.whl"
         )
+
+
+class TestEmptyAndHeaderOnlyBundles:
+    """A bundle with no artifacts is legitimate (a package that only declares
+    containers, before those are packaged). The reader must not walk off the
+    end of the stream, which cannot seek backwards to recover."""
+
+    def _empty_manifest(self) -> Manifest:
+        return Manifest.model_validate(
+            {
+                "formatVersion": FORMAT_VERSION,
+                "package": {"name": "empty", "version": "1.0.0"},
+                "createdAt": datetime(2026, 9, 22, tzinfo=UTC),
+                "platforms": ["linux/amd64"],
+                "artifacts": [],
+            }
+        )
+
+    def test_bundle_with_no_artifacts_round_trips(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "empty.offlineai"
+        with BundleWriter(bundle) as writer:
+            writer.write_header(manifest=self._empty_manifest(), package_yaml=b"kind: Package\n")
+
+        with BundleReader.open(bundle) as reader:
+            header = reader.read_header()
+            assert header.manifest.package.name == "empty"
+            assert list(reader.iter_artifacts()) == []
+
+    def test_iter_artifacts_can_be_called_twice_without_seeking_back(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "empty.offlineai"
+        with BundleWriter(bundle) as writer:
+            writer.write_header(manifest=self._empty_manifest(), package_yaml=b"kind: Package\n")
+        with BundleReader.open(bundle) as reader:
+            reader.read_header()
+            assert list(reader.iter_artifacts()) == []
+            assert list(reader.iter_artifacts()) == []

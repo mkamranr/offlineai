@@ -292,12 +292,22 @@ class BundleReader:
         self._counter = counter
         self._header: BundleHeader | None = None
         self._pending: tarfile.TarInfo | None = None
+        # Stream mode cannot seek backwards, so calling next() once the archive
+        # is exhausted raises. A bundle with no artifacts (or one whose header
+        # runs to the end) hits this, so exhaustion is tracked explicitly.
+        self._exhausted = False
 
     @classmethod
     @contextmanager
     def open(cls, path: Path | str) -> Iterator[BundleReader]:
         """Open a bundle for streaming reads, detecting compression."""
-        handle = Path(path).open("rb")  # noqa: SIM115 - closed in the finally below
+        bundle = Path(path)
+        if not bundle.is_file():
+            raise VerificationError(
+                f"{bundle} does not exist",
+                action="Check the path to the bundle file.",
+            )
+        handle = bundle.open("rb")  # noqa: SIM115 - closed in the finally below
         counter = _CountingReader(handle)
         try:
             # "r|*" is the transparent-compression *stream* mode: it never
@@ -333,7 +343,11 @@ class BundleReader:
             return self._header
 
         blobs: dict[str, bytes] = {}
-        while (member := self._tar.next()) is not None:
+        while True:
+            member = self._safe_next()
+            if member is None:
+                self._exhausted = True
+                break
             if not layout.is_header_member(member.name):
                 self._pending = member
                 break
@@ -387,7 +401,9 @@ class BundleReader:
         member = self._pending
         self._pending = None
         if member is None:
-            member = self._tar.next()
+            if self._exhausted:
+                return
+            member = self._safe_next()
 
         while member is not None:
             if member.isdir():
@@ -404,7 +420,26 @@ class BundleReader:
             handle = self._tar.extractfile(member)
             if handle is not None:
                 yield entry, handle
-            member = self._tar.next()
+            member = self._safe_next()
+        self._exhausted = True
+
+    def _safe_next(self) -> tarfile.TarInfo | None:
+        """Advance the archive, turning a malformed tail into a clear failure.
+
+        A truncated bundle - the common outcome of a transfer that ran out of
+        space or was unplugged - surfaces here as a tarfile error. Letting that
+        escape raw would exit 1 and read like a crash; it is a verification
+        failure and must exit 3.
+        """
+        try:
+            return self._tar.next()
+        except tarfile.TarError as exc:
+            raise VerificationError(
+                "the bundle archive is truncated or corrupt",
+                details={"Detail": str(exc)},
+                action="The transfer was probably incomplete. Re-copy the bundle "
+                "from the builder and verify again.",
+            ) from exc
 
     # -- conveniences ----------------------------------------------------
 
