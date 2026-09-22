@@ -1,0 +1,88 @@
+# A production LLM server for an air-gapped environment (specification
+# section 56). Real definition; roughly 62 GB built.
+apiVersion: offlineai/v1
+
+kind: Package
+
+metadata:
+  name: qwen-vllm
+  version: 1.0.0
+  description: Qwen3-30B served by vLLM, with an OpenAI-compatible API.
+
+runtime:
+  type: docker
+
+architecture:
+  - amd64
+
+os:
+  - ubuntu:24.04
+
+models:
+  - name: model
+    source:
+      type: huggingface
+      repo: Qwen/Qwen3-30B-A3B
+      revision: main
+      # Exclude the duplicate weight format. The repository ships both
+      # safetensors and .bin of the same tensors; carrying both would add
+      # tens of gigabytes to the bundle for nothing.
+      exclude:
+        - "*.bin"
+        - "*.msgpack"
+        - "*.h5"
+    destination: /models/model
+
+containers:
+  - name: vllm
+    image: vllm/vllm-openai:v0.6.3
+    platform: linux/amd64
+    # Record the digest once you have resolved it on the builder. A tag is
+    # mutable; a digest is the only way to say "this exact image".
+    # digest: sha256:...
+
+environment:
+  # These two are the difference between a server that starts and one that
+  # hangs trying to reach huggingface.co on a machine with no route out.
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  VLLM_NO_USAGE_STATS: "1"
+  DO_NOT_TRACK: "1"
+
+hardware:
+  gpu:
+    required: true
+    vendor: nvidia
+    minimum_vram_gb: 48
+    minimum_driver: "550"
+    count: 1
+  minimum_ram_gb: 64
+  minimum_disk_gb: 200
+
+services:
+  - name: vllm
+    container: vllm
+    command:
+      - --model
+      - /models/model
+      - --served-model-name
+      - qwen3
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      # Tensor parallelism is deliberately NOT set here. Section 30: how the
+      # workload divides itself across devices is an application decision, and
+      # OfflineAI must not assume it. Set it per site with --config.
+    ports:
+      - "8000:8000"
+
+install:
+  healthcheck:
+    command:
+      - curl
+      - --fail
+      - http://localhost:8000/health
+    # Loading 30B of weights from disk is not quick.
+    retries: 60
+    interval_seconds: 10

@@ -1,0 +1,9 @@
+# A real transitive closure. `offlineai build` resolves these for the TARGET
+# platform (linux/amd64, cp312), not for whatever the builder happens to be,
+# and fails the build if any of them has no matching wheel.
+fastapi==0.115.6
+uvicorn==0.34.0
+httpx==0.28.1
+qdrant-client==1.12.1
+redis==5.2.1
+pydantic==2.10.4

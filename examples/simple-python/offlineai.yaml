@@ -1,0 +1,24 @@
+# A package with no container at all: just files, carried across the air gap
+# and verified on arrival. The smallest thing OfflineAI can usefully do.
+apiVersion: offlineai/v1
+
+kind: Package
+
+metadata:
+  name: simple-python
+  version: 1.0.0
+  description: Local files packaged, transferred and verified. No container.
+  license: Apache-2.0
+
+architecture:
+  - amd64
+
+models:
+  # "local" is a first-class source, not a test fixture. Plenty of real
+  # workloads ship weights that were produced in-house and never lived in a
+  # public hub.
+  - name: scoring-model
+    source:
+      type: local
+      path: ./model
+    destination: /models/scoring-model

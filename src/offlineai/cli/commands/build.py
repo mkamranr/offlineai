@@ -50,6 +50,14 @@ def build(
     signer: Annotated[
         str | None, typer.Option("--signer", help="Identity recorded in the signature.")
     ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Validate the definition and report what would be fetched, "
+            "without fetching or writing anything.",
+        ),
+    ] = False,
 ) -> None:
     """Build an .offlineai bundle from a package definition.
 
@@ -75,5 +83,11 @@ def build(
         compression=compression,
         sign_key=sign_key,
         signer=signer,
+        dry_run=dry_run,
     )
+    if dry_run:
+        output.emit(result)
+        output.line()
+        output.line("Dry run: the definition is valid. Nothing was written.")
+        return
     output.build_result(result)

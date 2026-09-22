@@ -1,0 +1,67 @@
+# Speech-to-text on an air-gapped host. Real definition; roughly 8 GB built.
+apiVersion: offlineai/v1
+
+kind: Package
+
+metadata:
+  name: whisper
+  version: 2.0.0
+  description: Whisper large-v3 speech recognition, served over HTTP.
+  license: Apache-2.0
+
+runtime:
+  type: docker
+
+architecture:
+  - amd64
+
+os:
+  - ubuntu:24.04
+
+models:
+  - name: whisper-large-v3
+    source:
+      type: huggingface
+      repo: openai/whisper-large-v3
+      # Pin the revision. A tag is mutable, and "the model we tested" has to
+      # mean something six months from now.
+      revision: main
+    destination: /models/whisper
+
+containers:
+  - name: api
+    image: ghcr.io/ggerganov/whisper.cpp:main
+    platform: linux/amd64
+
+environment:
+  # Belt and braces: the runtime must not try to fetch anything it is missing.
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  WHISPER_MODEL_PATH: /models/whisper
+
+hardware:
+  gpu:
+    required: false
+    vendor: nvidia
+    minimum_vram_gb: 10
+  minimum_ram_gb: 16
+  minimum_disk_gb: 20
+
+volumes:
+  - host: ./audio
+    container: /audio
+
+services:
+  - name: api
+    container: api
+    ports:
+      - "9000:9000"
+
+install:
+  healthcheck:
+    command:
+      - curl
+      - --fail
+      - http://localhost:9000/health
+    retries: 20
+    interval_seconds: 5

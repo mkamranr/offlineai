@@ -109,6 +109,7 @@ class BundleBuilder:
         compression: Compression = Compression.NONE,
         sign_key: Path | str | None = None,
         signer: str | None = None,
+        dry_run: bool = False,
     ) -> BuildResult:
         self.cache.ensure()
         self._steps = []
@@ -132,6 +133,12 @@ class BundleBuilder:
                     "false in config.yaml.",
                 )
             step.detail = "none found"
+
+        if dry_run:
+            # Validate everything that is cheap to check and stop before the
+            # first byte is fetched. This is what makes a 62 GB definition
+            # reviewable on a laptop.
+            return self._dry_run_result(package, base_dir)
 
         resolved: list[ResolvedArtifact] = []
 
@@ -221,6 +228,53 @@ class BundleBuilder:
         )
 
     # -- pipeline stages -------------------------------------------------
+
+    def _dry_run_result(self, package: Package, base_dir: Path) -> BuildResult:
+        """Report what a real build would fetch, without fetching it."""
+        planned: list[str] = []
+        for model in package.models:
+            planned.append(f"model {model.name} from {model.source.type}")
+        for container in package.containers:
+            how = "build" if container.dockerfile else "pull"
+            planned.append(f"image {container.reference} ({how})")
+        for requirements in package.python.requirements if package.python else []:
+            path = base_dir / requirements
+            planned.append(
+                f"python wheels from {requirements}"
+                + ("" if path.is_file() else "  [MISSING FILE]")
+            )
+        for name in package.system.packages if package.system else []:
+            planned.append(f"system package {name}")
+
+        missing = [p for p in planned if "[MISSING FILE]" in p]
+        for index, description in enumerate(planned, start=3):
+            step = BuildStep(
+                index=min(index, len(_STEPS)),
+                total=len(_STEPS),
+                name="Would resolve",
+                status=CheckStatus.SKIPPED,
+                detail=description,
+            )
+            self._steps.append(step)
+            if self._on_step is not None:
+                self._on_step(step)
+
+        if missing:
+            raise InvalidPackageError(
+                "the package definition references files that do not exist",
+                details={"Missing": "\n".join(missing)},
+            )
+
+        return BuildResult(
+            package=package.metadata.name,
+            version=package.metadata.version,
+            bundle_path="(dry run - nothing written)",
+            size=0,
+            sha256="",
+            artifact_count=len(planned),
+            steps=self._steps,
+            warnings=["Dry run: the definition is valid. Nothing was fetched or written."],
+        )
 
     def _resolve_models(self, package: Package, base_dir: Path) -> list[ResolvedArtifact]:
         out: list[ResolvedArtifact] = []

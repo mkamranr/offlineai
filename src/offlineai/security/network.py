@@ -115,6 +115,10 @@ class NetworkAudit:
 def audit_package(package: Package, manifest: Manifest | None = None) -> NetworkAudit:
     """Inspect a package definition, and optionally its manifest."""
     audit = NetworkAudit(package=package.metadata.name, version=package.metadata.version)
+    # Service and container names resolve on the deployment network. Knowing
+    # them turns http://vllm:8000 from a suspicious URL into a definitively
+    # internal one.
+    internal = {s.name for s in package.services} | {c.name for c in package.containers}
 
     for model in package.models:
         locator = getattr(model.source, "repo", None) or getattr(model.source, "url", None)
@@ -157,9 +161,9 @@ def audit_package(package: Package, manifest: Manifest | None = None) -> Network
                 audit.findings.append(
                     Finding(
                         url=url,
-                        phase=_classify(url, key),
+                        phase=_classify(url, key, internal),
                         location=f"{scope}.{key}",
-                        detail=_explain(url, key),
+                        detail=_explain(url, key, internal),
                     )
                 )
 
@@ -169,7 +173,7 @@ def audit_package(package: Package, manifest: Manifest | None = None) -> Network
                 audit.findings.append(
                     Finding(
                         url=url,
-                        phase=_classify(url, None),
+                        phase=_classify(url, None, internal),
                         location=f"services.{service.name}.command",
                         detail="referenced in the service command line",
                     )
@@ -190,9 +194,30 @@ def audit_package(package: Package, manifest: Manifest | None = None) -> Network
     return audit
 
 
-def _classify(url: str, key: str | None) -> Phase:
-    host = urlparse(url).netloc.split(":")[0]
+def _is_internal(host: str, internal: set[str]) -> bool:
+    """Whether a host is inside the deployment rather than out on the internet.
+
+    Three cases, all genuinely local:
+      * loopback and private ranges;
+      * a name the package itself declares as a service or container;
+      * any single-label hostname - `http://vllm:8000` is a container on the
+        deployment network, and a name with no dot cannot be public DNS.
+
+    That last rule matters more than it looks. Without it every correctly
+    written internal service URL is reported as a runtime dependency, and an
+    audit that cries wolf on correct configuration is one operators learn to
+    ignore.
+    """
     if _LOCAL_HOSTS.match(host):
+        return True
+    if host in internal:
+        return True
+    return "." not in host and host != ""
+
+
+def _classify(url: str, key: str | None, internal: set[str] | None = None) -> Phase:
+    host = urlparse(url).netloc.split(":")[0]
+    if _is_internal(host, internal or set()):
         return Phase.LOCAL
     if host in _BUILD_TIME_HOSTS:
         # A build-time host appearing in runtime configuration is exactly the
@@ -203,9 +228,11 @@ def _classify(url: str, key: str | None) -> Phase:
     return Phase.UNKNOWN
 
 
-def _explain(url: str, key: str) -> str:
+def _explain(url: str, key: str, internal: set[str] | None = None) -> str:
     host = urlparse(url).netloc.split(":")[0]
-    if _LOCAL_HOSTS.match(host):
+    if _is_internal(host, internal or set()):
+        if host in (internal or set()):
+            return f"resolves to the {host!r} service in this package"
         return "points inside the deployment; not an external dependency"
     if _RUNTIME_URL_KEYS.search(key):
         return (

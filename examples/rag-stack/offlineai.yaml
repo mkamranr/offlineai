@@ -1,0 +1,146 @@
+# The example that shows why OfflineAI is more than a Docker image exporter
+# (specification section 57): four images, three models and a Python
+# dependency closure, installed with one command on a machine with no network.
+apiVersion: offlineai/v1
+
+kind: Package
+
+metadata:
+  name: rag-stack
+  version: 1.1.0
+  description: Retrieval-augmented generation - vLLM, Qdrant, Redis and an app.
+  license: Apache-2.0
+
+runtime:
+  type: docker
+
+architecture:
+  - amd64
+
+os:
+  - ubuntu:24.04
+
+models:
+  # Three models with three different jobs. Reconstructing this set by hand on
+  # an isolated host is exactly the problem this tool exists to remove.
+  - name: llm
+    source:
+      type: huggingface
+      repo: Qwen/Qwen3-8B
+      revision: main
+      exclude: ["*.bin", "*.msgpack", "*.h5"]
+    destination: /models/llm
+
+  - name: embeddings
+    source:
+      type: huggingface
+      repo: BAAI/bge-m3
+      revision: main
+      exclude: ["*.bin", "*.msgpack", "*.h5"]
+    destination: /models/embeddings
+
+  - name: reranker
+    source:
+      type: huggingface
+      repo: BAAI/bge-reranker-v2-m3
+      revision: main
+      exclude: ["*.bin", "*.msgpack", "*.h5"]
+    destination: /models/reranker
+
+containers:
+  - name: vllm
+    image: vllm/vllm-openai:v0.6.3
+    platform: linux/amd64
+
+  - name: qdrant
+    image: qdrant/qdrant:v1.12.1
+    platform: linux/amd64
+
+  - name: redis
+    image: redis:7-alpine
+    platform: linux/amd64
+
+  - name: app
+    image: python:3.12-slim
+    platform: linux/amd64
+    dockerfile: Dockerfile
+
+python:
+  requirements:
+    - requirements.txt
+  version: "3.12"
+  platform: linux
+  architecture: amd64
+
+environment:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  # Service addresses point inside the deployment network, never outside.
+  # `offlineai network-check` reports these as LOCAL rather than as runtime
+  # dependencies, which is the distinction that matters here.
+  LLM_BASE_URL: "http://vllm:8000/v1"
+  QDRANT_URL: "http://qdrant:6333"
+  REDIS_URL: "redis://redis:6379/0"
+
+volumes:
+  - host: ./data/qdrant
+    container: /qdrant/storage
+  - host: ./data/documents
+    container: /documents
+    read_only: true
+
+hardware:
+  gpu:
+    required: true
+    vendor: nvidia
+    minimum_vram_gb: 24
+    minimum_driver: "550"
+  minimum_ram_gb: 32
+  minimum_disk_gb: 80
+
+secrets:
+  # Names only. The bundle never carries a value (section 40).
+  external:
+    - RAG_API_KEY
+
+services:
+  - name: redis
+    container: redis
+    ports:
+      - "6379:6379"
+
+  - name: qdrant
+    container: qdrant
+    ports:
+      - "6333:6333"
+
+  - name: vllm
+    container: vllm
+    command:
+      - --model
+      - /models/llm
+      - --served-model-name
+      - qwen3
+      - --host
+      - "0.0.0.0"
+    ports:
+      - "8000:8000"
+
+  - name: app
+    container: app
+    # Start order matters: the app is useless before its dependencies are up.
+    depends_on:
+      - redis
+      - qdrant
+      - vllm
+    ports:
+      - "8080:8080"
+
+install:
+  healthcheck:
+    command:
+      - curl
+      - --fail
+      - http://localhost:8080/health
+    retries: 60
+    interval_seconds: 10
