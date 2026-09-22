@@ -32,6 +32,7 @@ from offlineai.artifacts.sources.http import HttpSource
 from offlineai.artifacts.sources.huggingface import HuggingFaceSource
 from offlineai.artifacts.sources.local import LocalSource
 from offlineai.artifacts.sources.oci import OciSource
+from offlineai.artifacts.sources.pypi import PythonSource
 from offlineai.bundler.archive import BundleWriter
 from offlineai.bundler.results import BuildResult, BuildStep, CheckStatus
 from offlineai.bundler.verifier import verify_bundle
@@ -92,6 +93,7 @@ class BundleBuilder:
         self._on_step = on_step
         self._sources: dict[str, ArtifactSource] = sources or {}
         self._steps: list[BuildStep] = []
+        self._python_target: tuple[str, str] | None = None
         self._warnings: list[str] = []
 
     def build(
@@ -138,13 +140,11 @@ class BundleBuilder:
             resolved.extend(container_artifacts)
             step.detail = _describe(container_artifacts, "image")
 
+        # 5 - Python dependency closure
         with self._step(5) as step:
-            if package.python and package.python.requirements:
-                step.status = CheckStatus.SKIPPED
-                step.detail = "Python dependency resolution arrives in a later phase"
-                self._warnings.append("Python requirements declared but not yet packaged")
-            else:
-                step.detail = "none declared"
+            wheel_artifacts = self._resolve_python(package, base_dir)
+            resolved.extend(wheel_artifacts)
+            step.detail = _describe(wheel_artifacts, "wheel")
 
         with self._step(6) as step:
             if package.system and package.system.packages:
@@ -269,6 +269,43 @@ class BundleBuilder:
 
         return out
 
+    def _resolve_python(self, package: Package, base_dir: Path) -> list[ResolvedArtifact]:
+        """Resolve the transitive wheel closure for the declared target.
+
+        Explicitly for the *target*, not for the builder: a macOS builder that
+        resolved for itself would produce a bundle of macosx wheels that cannot
+        install on the Linux host they were meant for.
+        """
+        if not (package.python and package.python.requirements):
+            return []
+
+        target_platform = f"{package.python.platform}/{package.python.architecture}"
+        python_version = package.python.version or _current_python_version()
+
+        source = self._sources.get("pypi") or PythonSource()
+        out: list[ResolvedArtifact] = []
+        try:
+            for requirements in package.python.requirements:
+                ref = SourceRef(
+                    kind="pypi",
+                    locator=str(base_dir / requirements),
+                    name=Path(requirements).stem,
+                    artifact_type=ArtifactType.PYTHON_WHEEL,
+                    options={
+                        "platform": target_platform,
+                        "python_version": python_version,
+                    },
+                )
+                out.extend(self._fetch(source, request) for request in source.expand(ref))
+        finally:
+            cleanup = getattr(source, "cleanup", None)
+            if cleanup is not None:
+                cleanup()
+
+        if out:
+            self._python_target = (python_version, target_platform)
+        return out
+
     def _runtime(self) -> ContainerRuntime:
         if self._container_runtime is None:
             self._container_runtime = DockerRuntime()
@@ -333,7 +370,11 @@ class BundleBuilder:
             minimumRamGB=package.hardware.minimum_ram_gb,
             minimumDiskGB=package.hardware.minimum_disk_gb,
             minimumCpuCores=package.hardware.minimum_cpu_cores,
-            pythonVersion=package.python.version if package.python else None,
+            pythonVersion=(
+                self._python_target[0]
+                if self._python_target
+                else (package.python.version if package.python else None)
+            ),
             pythonPlatform=package.python.platform if package.python else None,
             pythonArchitecture=package.python.architecture if package.python else None,
         )
@@ -403,6 +444,10 @@ def _describe(artifacts: list[ResolvedArtifact], noun: str) -> str:
     cached = sum(1 for a in artifacts if a.cached)
     suffix = f", {cached} from cache" if cached else ""
     return f"{len(artifacts)} {noun}(s){suffix}"
+
+
+def _current_python_version() -> str:
+    return ".".join(str(p) for p in sys.version_info[:2])
 
 
 def _source_options(source: ModelSource) -> dict[str, object]:

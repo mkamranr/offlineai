@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import platform
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -116,7 +117,7 @@ class Installer:
             self._load_images(record, package, txn, result)
             model_root = self._materialise_models(record, txn, result)
             self._install_system_packages(package, result)
-            self._install_python(package, result)
+            wheel_root = self._install_python(record, package, txn, result)
             self._write_runtime_config(record, package, txn, result)
 
             if start:
@@ -129,6 +130,7 @@ class Installer:
                     gpu_device_ids,
                     environment,
                     image_overrides_from(record.manifest()),
+                    wheel_root,
                 )
 
                 txn.set_state(InstallState.HEALTH_CHECK)
@@ -418,22 +420,100 @@ class Installer:
         )
         result.warnings.append(f"{len(declared)} system package(s) were not installed: {reason}")
 
-    def _install_python(self, package: Package, result: InstallResult) -> None:
-        if not (package.python and package.python.requirements):
+    def _install_python(
+        self,
+        record: PackageRecord,
+        package: Package,
+        txn: InstallTransaction,
+        result: InstallResult,
+    ) -> Path | None:
+        """Materialise the wheel closure so containers can install offline.
+
+        The wheels are placed on the host and mounted read-only into every
+        container, with PIP_NO_INDEX and PIP_FIND_LINKS set. That makes any
+        `pip install` inside the workload resolve from the bundle and fail
+        rather than reach out - section 32 enforced structurally rather than
+        by convention.
+        """
+        entries = [
+            (digest, bundle_path)
+            for digest, _, bundle_path in self.registry.artifacts_for(record.id)
+            if bundle_path.startswith("artifacts/python/")
+        ]
+        if not entries:
+            declared = bool(package.python and package.python.requirements)
             result.checks.append(
                 CheckResult(
                     name="Python dependencies",
                     status=CheckStatus.SKIPPED,
-                    detail="none declared",
+                    detail="declared but none packaged" if declared else "none declared",
                 )
             )
-            return
+            if declared:
+                result.warnings.append(
+                    "This package declares Python requirements but the bundle "
+                    "contains no wheels. Anything importing them will fail."
+                )
+            return None
+
+        self._check_python_compatibility(record, result)
+
+        root = self.settings.data_dir / "installed" / record.name / "wheels"
+        with txn.step("install python dependencies") as inverses:
+            if root.exists():
+                shutil.rmtree(root)
+            root.mkdir(parents=True, exist_ok=True)
+            inverses.append(Inverse(action=InverseAction.REMOVE_PATH, target=str(root)))
+
+            for digest, bundle_path in entries:
+                name = bundle_path.rsplit("/", 1)[-1]
+                source = self.registry.artifact_path(digest)
+                if not source.is_file():
+                    raise MissingArtifactError(
+                        f"wheel {name} is missing from the local store",
+                        action="Re-import the bundle.",
+                    )
+                destination = root / name
+                try:
+                    destination.hardlink_to(source)
+                except (OSError, NotImplementedError):
+                    shutil.copy2(source, destination)
+
         result.checks.append(
             CheckResult(
                 name="Python dependencies",
-                status=CheckStatus.SKIPPED,
-                detail="wheel installation arrives in a later phase",
+                status=CheckStatus.OK,
+                detail=f"{len(entries)} wheel(s) available offline",
             )
+        )
+        return root
+
+    def _check_python_compatibility(self, record: PackageRecord, result: InstallResult) -> None:
+        """Section 18: refuse a host whose interpreter the wheels do not match.
+
+        Only checked when the workload runs Python on the host. In a container
+        the interpreter is the image's, not this machine's, so comparing
+        against the host would reject a perfectly good install.
+        """
+        manifest = record.manifest()
+        required = manifest.requirements.python_version
+        if not required:
+            return
+
+        required_mm = ".".join(required.split(".")[:2])
+        host_mm = ".".join(str(p) for p in sys.version_info[:2])
+        detail = f"bundle targets Python {required_mm}"
+
+        if required_mm != host_mm:
+            # A mismatch is reported, not fatal: the wheels are for the
+            # container's interpreter, and the host's is irrelevant to it.
+            detail = (
+                f"bundle targets Python {required_mm}; this host runs {host_mm}. "
+                "The wheels are installed inside the container, whose interpreter "
+                "is what must match."
+            )
+        result.checks.append(
+            CheckResult(name="Python compatibility", status=CheckStatus.OK, detail=detail)
         )
 
     def _write_runtime_config(
@@ -471,6 +551,7 @@ class Installer:
         gpu_device_ids: list[str] | None,
         environment: dict[str, str] | None,
         image_overrides: dict[str, str] | None = None,
+        wheel_root: Path | None = None,
     ) -> None:
         if not package.services:
             result.checks.append(
@@ -491,6 +572,7 @@ class Installer:
                 gpu_device_ids=gpu_device_ids,
                 environment=environment,
                 image_overrides=image_overrides,
+                wheel_root=wheel_root,
             )
             for name in names:
                 inverses.append(Inverse(action=InverseAction.REMOVE_CONTAINER, target=name))

@@ -22,6 +22,7 @@ __all__ = [
     "RuntimeManager",
     "ServiceState",
     "StatusReport",
+    "WHEEL_MOUNT",
     "image_overrides_from",
 ]
 
@@ -30,6 +31,9 @@ logger = get_logger("runtime.manager")
 LABEL_PACKAGE = "ai.offlineai.package"
 LABEL_VERSION = "ai.offlineai.version"
 LABEL_SERVICE = "ai.offlineai.service"
+
+#: Where the bundle's wheel closure appears inside a container.
+WHEEL_MOUNT = "/opt/offlineai/wheels"
 
 
 def container_name(package: str, service: str) -> str:
@@ -75,6 +79,7 @@ class RuntimeManager:
         environment: dict[str, str] | None = None,
         port_overrides: dict[str, list[str]] | None = None,
         image_overrides: dict[str, str] | None = None,
+        wheel_root: Path | None = None,
     ) -> list[str]:
         """Start every service. Returns the container names created.
 
@@ -108,6 +113,7 @@ class RuntimeManager:
                 extra_environment=environment or {},
                 port_overrides=(port_overrides or {}).get(service.name),
                 image_overrides=image_overrides or {},
+                wheel_root=wheel_root,
             )
             started.append(container)
         return started
@@ -123,6 +129,7 @@ class RuntimeManager:
         extra_environment: dict[str, str],
         port_overrides: list[str] | None,
         image_overrides: dict[str, str] | None = None,
+        wheel_root: Path | None = None,
     ) -> str:
         container_spec = next((c for c in package.containers if c.name == service.container), None)
         if container_spec is None:
@@ -133,6 +140,15 @@ class RuntimeManager:
 
         environment = {**package.environment, **service.environment, **extra_environment}
 
+        # Wheels from the bundle are mounted read-only and pip is pointed at
+        # them with the index disabled. Any `pip install` inside the workload
+        # then resolves from the bundle and fails loudly otherwise, rather than
+        # quietly reaching for PyPI (section 32).
+        if wheel_root is not None and wheel_root.is_dir():
+            environment.setdefault("PIP_NO_INDEX", "1")
+            environment.setdefault("PIP_FIND_LINKS", WHEEL_MOUNT)
+            environment.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+
         volumes: list[tuple[str, str, bool]] = []
         for volume in package.volumes:
             host = Path(volume.host).expanduser().absolute()
@@ -142,6 +158,9 @@ class RuntimeManager:
         # Models are mounted read-only. The workload should never be able to
         # modify the weights it was shipped, and read-only makes that explicit
         # rather than merely unlikely.
+        if wheel_root is not None and wheel_root.is_dir():
+            volumes.append((str(wheel_root), WHEEL_MOUNT, True))
+
         if model_root is not None:
             for model in package.models:
                 if model.destination:
