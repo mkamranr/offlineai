@@ -189,9 +189,25 @@ def _debug_enabled() -> bool:
 # bottom because each command module imports Context and register from here;
 # doing it at the top would be a cycle.
 def _register_commands() -> None:
-    from offlineai.cli.commands import build, init, inspect, verify
+    from offlineai.cli.commands import (
+        build,
+        import_bundle,
+        init,
+        inspect,
+        lifecycle,
+        registry_cmds,
+        verify,
+    )
 
-    for module in (init, build, verify, inspect):
+    for module in (
+        init,
+        build,
+        verify,
+        inspect,
+        import_bundle,
+        registry_cmds,
+        lifecycle,
+    ):
         module.register(app)
 
 

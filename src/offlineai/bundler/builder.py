@@ -28,6 +28,7 @@ from offlineai.artifacts.base import (
 )
 from offlineai.artifacts.cache import ArtifactCache
 from offlineai.artifacts.sources.local import LocalSource
+from offlineai.artifacts.sources.oci import OciSource
 from offlineai.bundler.archive import BundleWriter
 from offlineai.bundler.results import BuildResult, BuildStep, CheckStatus
 from offlineai.bundler.verifier import verify_bundle
@@ -35,6 +36,8 @@ from offlineai.config.settings import Settings
 from offlineai.errors import InvalidPackageError, SourceError
 from offlineai.logging import get_logger
 from offlineai.resolver.package import load_package
+from offlineai.runtime.base import ContainerRuntime
+from offlineai.runtime.docker import DockerRuntime
 from offlineai.schema.manifest import (
     ArtifactType,
     BuilderInfo,
@@ -78,8 +81,10 @@ class BundleBuilder:
         *,
         on_step: StepHook | None = None,
         sources: dict[str, ArtifactSource] | None = None,
+        runtime: ContainerRuntime | None = None,
     ) -> None:
         self.settings = settings
+        self._container_runtime = runtime
         self.cache = ArtifactCache(settings.cache_dir)
         self._on_step = on_step
         self._sources: dict[str, ArtifactSource] = sources or {}
@@ -124,18 +129,11 @@ class BundleBuilder:
             resolved.extend(model_artifacts)
             step.detail = _describe(model_artifacts, "model file")
 
-        # 4-6 are implemented in later phases; report honestly rather than
-        # printing OK for work that did not happen.
+        # 4 - container images
         with self._step(4) as step:
-            if package.containers:
-                step.status = CheckStatus.SKIPPED
-                step.detail = "container packaging arrives in the Docker phase"
-                self._warnings.append(
-                    f"{len(package.containers)} container image(s) declared but not yet "
-                    "packaged by this build"
-                )
-            else:
-                step.detail = "none declared"
+            container_artifacts = self._resolve_containers(package, base_dir)
+            resolved.extend(container_artifacts)
+            step.detail = _describe(container_artifacts, "image")
 
         with self._step(5) as step:
             if package.python and package.python.requirements:
@@ -210,6 +208,63 @@ class BundleBuilder:
             out.extend(self._fetch(source, request) for request in source.expand(ref))
         return out
 
+    def _resolve_containers(self, package: Package, base_dir: Path) -> list[ResolvedArtifact]:
+        """Build or pull each declared image, then save it into the bundle.
+
+        A container with a `dockerfile:` is built here rather than pulled: that
+        is how an application image that only exists in this repository gets
+        into the bundle at all.
+        """
+        if not package.containers:
+            return []
+
+        runtime = self._runtime()
+        source = self._sources.get("oci") or OciSource(runtime)
+
+        out: list[ResolvedArtifact] = []
+        for container in package.containers:
+            reference = str(container.reference)
+
+            if container.dockerfile:
+                dockerfile = base_dir / container.dockerfile
+                if not dockerfile.is_file():
+                    raise InvalidPackageError(
+                        f"container {container.name!r} declares dockerfile "
+                        f"{container.dockerfile!r}, which does not exist",
+                        details={"Looked for": str(dockerfile)},
+                    )
+                # Tag with the package identity so the built image is
+                # distinguishable from the base image it derives from, and so
+                # two packages building from python:3.12-slim do not collide.
+                reference = (
+                    f"offlineai/{package.metadata.name}-{container.name}:{package.metadata.version}"
+                )
+                context_dir = base_dir / (container.context or ".")
+                logger.info("building image %s", reference)
+                runtime.build(
+                    dockerfile=dockerfile,
+                    context=context_dir,
+                    tag=reference,
+                    platform=container.platform,
+                )
+
+            ref = SourceRef(
+                kind="oci",
+                locator=reference,
+                name=container.name,
+                artifact_type=ArtifactType.OCI_IMAGE,
+                options={"platform": container.platform},
+            )
+            for request in source.expand(ref):
+                out.append(self._fetch(source, request))
+
+        return out
+
+    def _runtime(self) -> ContainerRuntime:
+        if self._container_runtime is None:
+            self._container_runtime = DockerRuntime()
+        return self._container_runtime
+
     def _fetch(self, source: ArtifactSource, request: ArtifactRequest) -> ResolvedArtifact:
         cached = self.cache.lookup_ref(request.source_kind, request.cache_key)
         if cached is not None and request.expected_sha256 in (None, cached.sha256):
@@ -245,7 +300,9 @@ class BundleBuilder:
     ) -> Manifest:
         gpu = package.hardware.gpu
         requirements = Requirements(
-            docker=DockerRequirement() if package.runtime.type == "docker" else None,
+            docker=(
+                DockerRequirement(minimumVersion=None) if package.runtime.type == "docker" else None
+            ),
             gpu=(
                 GpuRequirementSummary(
                     vendor=gpu.vendor,
