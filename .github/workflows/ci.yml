@@ -40,8 +40,37 @@ jobs:
           enable-cache: true
       - run: uv venv --python ${{ matrix.python-version }}
       - run: uv pip install -e ".[dev,builder]"
+      # uv venvs ship without pip; the wheel resolver shells out to it.
+      - run: uv run python -m ensurepip --upgrade
       - name: unit, security and integration tests (offline)
-        run: uv run pytest tests/unit tests/security tests/integration -v --cov=offlineai --cov-report=term-missing
+        run: >
+          uv run pytest tests/unit tests/security tests/integration
+          -v --cov=offlineai --cov-report=term-missing
+
+  # Guards the bug class that once shipped: something imported at runtime but
+  # only available through a BUILDER extra, so a core install - which is what
+  # goes on the air-gapped target - crashed on every invocation.
+  core-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install with NO extras, exactly as a target would
+        run: pip install .
+      - name: the CLI must work without any builder dependency
+        run: |
+          offlineai --version
+          offlineai --help
+          offlineai doctor || true
+      - name: builder-only packages must be absent
+        run: |
+          if python -c "import huggingface_hub" 2>/dev/null; then
+            echo "huggingface_hub reached a core install; the extras split is broken"
+            exit 1
+          fi
+          echo "builder extras correctly absent"
 
   airgap-e2e:
     runs-on: ubuntu-latest
@@ -52,5 +81,17 @@ jobs:
           enable-cache: true
       - run: uv venv --python 3.12
       - run: uv pip install -e ".[dev,builder]"
-      - name: end-to-end install inside a network-isolated container
+      # The wheelhouse is assembled with pip, which a uv venv omits. Without
+      # this the fixture skips and the job passes while testing nothing.
+      - run: uv run python -m ensurepip --upgrade
+      - run: docker pull python:3.12-slim
+      - name: verify and import a bundle inside `docker run --network none`
         run: uv run pytest tests/airgap -v -m airgap_e2e
+      - name: fail if the air-gap suite skipped instead of running
+        run: |
+          uv run pytest tests/airgap -m airgap_e2e -q --no-header \
+            | tee /tmp/airgap.txt
+          if grep -qiE "[0-9]+ skipped" /tmp/airgap.txt; then
+            echo "air-gap tests were skipped; this job must actually run them"
+            exit 1
+          fi
