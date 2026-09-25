@@ -36,15 +36,20 @@ def register(app: typer.Typer) -> None:
 
 
 def _print_checks(context: Context, checks: list[CheckResult]) -> None:
+    """Render the check table.
+
+    Goes through `output.line`, not `console.print`. The console is ungated,
+    so printing through it directly emitted these rows *after* the JSON
+    payload and made `offlineai --json doctor | jq` fail.
+    """
     if not checks:
         return
     width = max(len(c.name) for c in checks) + 2
     for item in checks:
         detail = f"  {item.detail}" if item.detail else ""
-        context.output.console.print(
+        context.output.line(
             f"{(item.name + ':').ljust(width)}{item.status.value}{detail}",
             style=_STYLE[item.status],
-            highlight=False,
         )
 
 
