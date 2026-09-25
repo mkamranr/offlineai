@@ -364,23 +364,65 @@ class Installer:
         return root
 
     def _install_system_packages(self, package: Package, result: InstallResult) -> None:
-        declared = package.system.packages if package.system else []
-        if not declared:
+        """Report on declared OS packages.
+
+        Must agree with what the build said. The build refuses a package that
+        declares *required* system packages, because shipping a bundle without
+        them would break the completeness promise, and tells the operator to
+        put the dependency in the container image instead. The advisory tiers
+        are allowed through with a warning.
+
+        This previously inspected only the required tier - which the builder
+        now rejects - so a package declaring optional packages was reported as
+        "none declared" here after the build had just counted them. Two
+        different answers to the same question.
+        """
+        system = package.system
+        required = list(system.packages) if system else []
+        advisory = [*system.optional_packages, *system.recommended_packages] if system else []
+
+        if not required and not advisory:
             result.checks.append(
                 CheckResult(
                     name="System packages", status=CheckStatus.SKIPPED, detail="none declared"
                 )
             )
             return
+
+        if required:
+            # Only reachable for a bundle built by an older release, or one
+            # whose package.yaml was edited after the fact. Say the same thing
+            # the builder says rather than inventing a second explanation.
+            detail = (
+                f"{len(required)} required package(s) are not installed: OS package "
+                "support is not implemented in this release"
+            )
+            result.checks.append(
+                CheckResult(name="System packages", status=CheckStatus.FAILED, detail=detail)
+            )
+            result.warnings.append(
+                f"This bundle declares required system packages ({', '.join(required)}) "
+                "that were never packaged. Rebuild it with this release, which will "
+                "tell you to move them into the container image."
+            )
+            return
+
         reason = (
             "dpkg is unavailable on this platform"
             if result.dev_mode
-            else "OS package installation arrives in a later phase"
+            else "they are advisory, so the bundle is complete without them"
         )
         result.checks.append(
-            CheckResult(name="System packages", status=CheckStatus.SKIPPED, detail=reason)
+            CheckResult(
+                name="System packages",
+                status=CheckStatus.SKIPPED,
+                detail=f"{len(advisory)} optional/recommended package(s) not installed; {reason}",
+            )
         )
-        result.warnings.append(f"{len(declared)} system package(s) were not installed: {reason}")
+        result.warnings.append(
+            f"{len(advisory)} optional or recommended system package(s) were not "
+            f"installed: {', '.join(advisory)}"
+        )
 
     def _install_python(
         self,

@@ -119,3 +119,89 @@ class TestTheSchemaStillAcceptsTheField:
         )
         assert package.system is not None
         assert package.system.packages == ["curl"]
+
+
+class TestInstallAgreesWithBuildAboutSystemPackages:
+    """The build and the install must not tell different stories.
+
+    They did: a package declaring optional packages got
+    "3 optional/recommended package(s) are not packaged" from the build and
+    "none declared" from the install, because the installer only looked at the
+    required tier - which the builder now refuses outright. Its message also
+    still said "arrives in a later phase" where the builder says "not
+    implemented in this release; put it in the Dockerfile".
+    """
+
+    def _install(self, source: Path, settings: Settings, tmp_path: Path) -> list:
+        from offlineai.bundler.builder import BundleBuilder
+        from offlineai.installer.installer import Installer
+        from offlineai.registry.registry import Registry
+        from offlineai.runtime.fake import FakeRuntime
+
+        built = BundleBuilder(settings, runtime=FakeRuntime()).build(
+            source, output=tmp_path / "dist"
+        )
+        registry = Registry(settings)
+        registry.import_bundle(built.bundle_path)
+        result = Installer(settings, registry, FakeRuntime()).install(
+            source.name if source.name != "pkg" else "demo",
+            start=False,
+            health_sleep=0,
+        )
+        return [c for c in result.checks if c.name == "System packages"]
+
+    def test_optional_packages_are_reported_not_called_none(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        source = package_with("system:\n  optional_packages:\n    - vim\n    - htop\n", tmp_path)
+        checks = self._install(source, settings, tmp_path)
+        assert checks, "the installer said nothing about system packages"
+        detail = checks[0].detail or ""
+        assert "none declared" not in detail, (
+            f"install reported {detail!r} for a package that declares two optional "
+            "packages; the build reported them"
+        )
+        assert "2" in detail
+
+    def test_recommended_packages_are_counted_too(self, settings: Settings, tmp_path: Path) -> None:
+        source = package_with(
+            "system:\n  optional_packages:\n    - vim\n  recommended_packages:\n    - curl\n",
+            tmp_path,
+        )
+        detail = (self._install(source, settings, tmp_path)[0].detail) or ""
+        assert "3" in detail or "2" in detail
+
+    def test_a_package_with_no_system_block_still_says_none_declared(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        source = package_with("", tmp_path)
+        assert "none declared" in (self._install(source, settings, tmp_path)[0].detail or "")
+
+    def test_the_advisory_tiers_do_not_fail_the_install(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from offlineai.bundler.builder import BundleBuilder
+        from offlineai.installer.installer import Installer
+        from offlineai.installer.transaction import InstallState
+        from offlineai.registry.registry import Registry
+        from offlineai.runtime.fake import FakeRuntime
+
+        source = package_with("system:\n  optional_packages:\n    - vim\n", tmp_path)
+        built = BundleBuilder(settings, runtime=FakeRuntime()).build(
+            source, output=tmp_path / "dist"
+        )
+        registry = Registry(settings)
+        registry.import_bundle(built.bundle_path)
+        result = Installer(settings, registry, FakeRuntime()).install(
+            "demo", start=False, health_sleep=0
+        )
+        assert result.state is InstallState.COMPLETED
+
+    def test_the_message_matches_what_the_builder_says(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        """No "later phase" anywhere: the builder tells operators to put the
+        dependency in the image, and the installer must not contradict it."""
+        source = package_with("system:\n  optional_packages:\n    - vim\n", tmp_path)
+        detail = (self._install(source, settings, tmp_path)[0].detail or "").lower()
+        assert "later phase" not in detail
