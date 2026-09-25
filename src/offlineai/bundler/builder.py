@@ -41,7 +41,7 @@ from offlineai.bundler.archive import BundleWriter
 from offlineai.bundler.results import BuildResult, BuildStep, CheckStatus
 from offlineai.bundler.verifier import verify_bundle
 from offlineai.config.settings import Settings
-from offlineai.errors import InvalidPackageError, SourceError
+from offlineai.errors import InvalidPackageError, MissingArtifactError, SourceError
 from offlineai.logging import get_logger
 from offlineai.progress import NullReporter, ProgressReporter
 from offlineai.resolver.package import load_package
@@ -143,6 +143,8 @@ class BundleBuilder:
                 )
             step.detail = "none found"
 
+        _reject_unsupported(package)
+
         if dry_run:
             # Validate everything that is cheap to check and stop before the
             # first byte is fetched. This is what makes a 62 GB definition
@@ -170,10 +172,20 @@ class BundleBuilder:
             step.detail = _describe(wheel_artifacts, "wheel")
 
         with self._step(6) as step:
-            if package.system and package.system.packages:
+            # Required OS packages are refused before this point, so reaching
+            # here means there are none to resolve.
+            optional = len(package.system.optional_packages) if package.system else 0
+            recommended = len(package.system.recommended_packages) if package.system else 0
+            if optional or recommended:
                 step.status = CheckStatus.SKIPPED
-                step.detail = "OS package resolution arrives in a later phase"
-                self._warnings.append("System packages declared but not yet packaged")
+                step.detail = (
+                    f"{optional + recommended} optional/recommended package(s) are not packaged"
+                )
+                self._warnings.append(
+                    f"{optional + recommended} optional or recommended system "
+                    "package(s) were not included. They are advisory, so the "
+                    "bundle is still complete with respect to what it requires."
+                )
             else:
                 step.detail = "none declared"
 
@@ -561,6 +573,39 @@ def _describe(artifacts: list[ResolvedArtifact], noun: str) -> str:
     cached = sum(1 for a in artifacts if a.cached)
     suffix = f", {cached} from cache" if cached else ""
     return f"{len(artifacts)} {noun}(s){suffix}"
+
+
+def _reject_unsupported(package: Package) -> None:
+    """Fail on anything declared that this build cannot actually deliver.
+
+    Section 74 is the whole promise: a successful build must mean the bundle
+    contains everything required for the declared offline installation. OS
+    package resolution (section 19) is not implemented, so a package that
+    requires one would otherwise produce a bundle that verifies, reports
+    success and silently lacks it - discovered on the air-gapped side, where
+    it cannot be fixed. Warning was not enough.
+
+    Optional and recommended packages are advisory by definition, so they warn
+    rather than fail.
+    """
+    required = package.system.packages if package.system else []
+    if not required:
+        return
+
+    raise MissingArtifactError(
+        f"this build cannot package the {len(required)} required system "
+        "package(s) this package declares",
+        details={
+            "Declared": ", ".join(required),
+            "Not supported": "OS package resolution (specification section 19) "
+            "is not implemented in this release.",
+        },
+        action="For a containerised workload the right home for an OS dependency "
+        "is the image: add it to the container's Dockerfile with apt-get, and the "
+        "builder will package the built image.\n"
+        "If the dependency is genuinely advisory, move it to "
+        "'system.optional_packages' or 'system.recommended_packages'.",
+    )
 
 
 def _current_python_version() -> str:

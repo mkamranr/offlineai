@@ -83,6 +83,7 @@ testpaths = ["tests"]
 markers = [
     "airgap_e2e: end-to-end test requiring Docker; runs install inside --network none",
     "needs_docker: requires a live Docker daemon",
+    "linux_e2e: runs the suite inside a Linux container; requires Docker",
 ]
 filterwarnings = ["error::DeprecationWarning:offlineai.*"]
 

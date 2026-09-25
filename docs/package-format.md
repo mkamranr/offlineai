@@ -60,7 +60,7 @@ python:
   architecture: amd64
 
 system:
-  packages: [curl, ca-certificates]
+  packages: [curl, ca-certificates]   # NOT YET SUPPORTED - see below
   recommended_packages: []
   optional_packages: []
 
@@ -136,6 +136,37 @@ decision OfflineAI must not assume.
 Values are binary GB, matching how cards are sold. An "80GB" H100 reports
 81559 MiB, of which some is reserved; the comparison rounds to the advertised
 capacity so an 80 GB card satisfies an 80 GB requirement.
+
+### `system.packages`
+
+**Not implemented in this release, and declaring it fails the build.**
+
+Section 19 is a real requirement and the field stays in the schema, but OS
+package resolution does not exist yet. A build that quietly omitted them would
+produce a bundle that verifies, reports success and is missing something it
+declared — discovered on the air-gapped side, where it cannot be fixed. That
+is precisely what section 74 forbids, so the build refuses instead:
+
+```
+Reason:
+this build cannot package the 2 required system package(s) this package declares
+
+Declared:
+curl, ca-certificates
+```
+
+For a containerised workload the right home for an OS dependency is the image
+anyway:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+The builder packages the built image, so the dependency travels with it.
+
+`optional_packages` and `recommended_packages` are advisory by definition, so
+they warn rather than fail.
 
 ### `secrets.external`
 
