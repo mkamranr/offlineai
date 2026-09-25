@@ -10,6 +10,7 @@ import typer
 from offlineai.bundler.verifier import verify_bundle
 from offlineai.cli.main import Context
 from offlineai.cli.main import register as _register
+from offlineai.cli.progress import select_reporter
 
 
 def register(app: typer.Typer) -> None:
@@ -28,5 +29,13 @@ def verify(
     Exits 3 if verification fails.
     """
     context: Context = ctx.obj
-    result = verify_bundle(bundle)
+    reporter = select_reporter(
+        json=context.output.fmt.json,
+        quiet=context.output.fmt.quiet,
+        is_terminal=context.output.console.is_terminal,
+    )
+    # Streaming a 62 GB bundle takes minutes; silence for that long reads as
+    # a hang.
+    with reporter:
+        result = verify_bundle(bundle, reporter=reporter)
     context.output.verify_result(result)

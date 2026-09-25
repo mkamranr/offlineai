@@ -11,6 +11,7 @@ from offlineai.bundler.builder import BundleBuilder
 from offlineai.bundler.results import BuildStep
 from offlineai.cli.main import Context
 from offlineai.cli.main import register as _register
+from offlineai.cli.progress import select_reporter
 from offlineai.schema.manifest import Compression
 
 
@@ -50,6 +51,18 @@ def build(
     signer: Annotated[
         str | None, typer.Option("--signer", help="Identity recorded in the signature.")
     ] = None,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            "--workers",
+            "-j",
+            help="Concurrent artifact downloads. Defaults to the configured "
+            "value (4), kept conservative so a build does not saturate storage "
+            "or the network.",
+            min=1,
+            max=64,
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -73,18 +86,24 @@ def build(
     def on_step(step: BuildStep) -> None:
         output.build_step(step.index, step.total, step.name, step.status, step.detail)
 
-    builder = BundleBuilder(context.settings, on_step=on_step)
+    reporter = select_reporter(
+        json=output.fmt.json,
+        quiet=output.fmt.quiet,
+        is_terminal=output.console.is_terminal,
+    )
+    builder = BundleBuilder(context.settings, on_step=on_step, reporter=reporter, workers=workers)
 
     output.line(f"Building package from {target}")
     output.line()
-    result = builder.build(
-        target,
-        output=output_path,
-        compression=compression,
-        sign_key=sign_key,
-        signer=signer,
-        dry_run=dry_run,
-    )
+    with reporter:
+        result = builder.build(
+            target,
+            output=output_path,
+            compression=compression,
+            sign_key=sign_key,
+            signer=signer,
+            dry_run=dry_run,
+        )
     if dry_run:
         output.emit(result)
         output.line()

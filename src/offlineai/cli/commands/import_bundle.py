@@ -10,6 +10,7 @@ import typer
 from offlineai.bundler.verifier import verify_bundle
 from offlineai.cli.main import Context
 from offlineai.cli.main import register as _register
+from offlineai.cli.progress import select_reporter
 from offlineai.registry.registry import Registry
 from offlineai.utils.sizes import format_bytes
 
@@ -43,13 +44,21 @@ def import_bundle(
     output = context.output
     registry = Registry(context.settings)
 
+    reporter = select_reporter(
+        json=output.fmt.json,
+        quiet=output.fmt.quiet,
+        is_terminal=output.console.is_terminal,
+    )
+
     if not skip_verify:
         output.line(f"Verifying {bundle.name}")
-        verify_bundle(bundle)
+        with reporter:
+            verify_bundle(bundle, reporter=reporter)
         output.line("Verification: OK", style="green")
         output.line()
 
-    result = registry.import_bundle(bundle, force=force)
+    with reporter:
+        result = registry.import_bundle(bundle, reporter=reporter, force=force)
 
     if result.already_present:
         output.line(

@@ -18,6 +18,7 @@ from offlineai.artifacts.base import ArtifactRequest, ResolvedArtifact, SourceRe
 from offlineai.artifacts.cache import ArtifactCache
 from offlineai.errors import SourceError
 from offlineai.logging import get_logger
+from offlineai.progress import ProgressReporter
 from offlineai.runtime.base import ContainerRuntime
 from offlineai.schema.manifest import ArtifactType
 from offlineai.schema.package import ImageReference
@@ -59,7 +60,13 @@ class OciSource:
             )
         ]
 
-    def fetch(self, request: ArtifactRequest, cache: ArtifactCache) -> ResolvedArtifact:
+    def fetch(
+        self,
+        request: ArtifactRequest,
+        cache: ArtifactCache,
+        *,
+        progress: ProgressReporter | None = None,  # noqa: ARG002 - `docker save` exposes no byte counter to report against
+    ) -> ResolvedArtifact:
         reference = request.locator
         platform = str(request.metadata.get("platform") or "linux/amd64")
 

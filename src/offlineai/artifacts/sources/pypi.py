@@ -31,6 +31,7 @@ from offlineai.artifacts.base import ArtifactRequest, ResolvedArtifact, SourceRe
 from offlineai.artifacts.cache import ArtifactCache
 from offlineai.errors import MissingArtifactError, SourceError
 from offlineai.logging import get_logger
+from offlineai.progress import ProgressReporter
 from offlineai.schema.manifest import ArtifactType
 from offlineai.utils.proc import run
 
@@ -185,7 +186,13 @@ class PythonSource:
         logger.info("resolved %d wheel(s) for %s", len(requests), target_platform)
         return requests
 
-    def fetch(self, request: ArtifactRequest, cache: ArtifactCache) -> ResolvedArtifact:
+    def fetch(
+        self,
+        request: ArtifactRequest,
+        cache: ArtifactCache,
+        *,
+        progress: ProgressReporter | None = None,  # noqa: ARG002 - pip has already written the wheel by the time fetch runs
+    ) -> ResolvedArtifact:
         path = Path(request.locator)
         if not path.is_file():
             raise SourceError(

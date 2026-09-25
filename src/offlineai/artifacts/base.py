@@ -22,6 +22,7 @@ from offlineai.schema.manifest import ArtifactEntry, ArtifactType
 
 if TYPE_CHECKING:
     from offlineai.artifacts.cache import ArtifactCache
+    from offlineai.progress import ProgressReporter
 
 __all__ = ["ArtifactRequest", "ArtifactSource", "ResolvedArtifact", "SourceRef"]
 
@@ -110,6 +111,18 @@ class ArtifactSource(Protocol):
         """Turn one declaration into the concrete files it implies."""
         ...
 
-    def fetch(self, request: ArtifactRequest, cache: ArtifactCache) -> ResolvedArtifact:
-        """Obtain one file, using and populating the cache."""
+    def fetch(
+        self,
+        request: ArtifactRequest,
+        cache: ArtifactCache,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> ResolvedArtifact:
+        """Obtain one file, using and populating the cache.
+
+        ``progress`` is optional and keyed on ``request.id``. A source that
+        cannot report byte-level progress - anything shelling out to another
+        tool - should simply ignore it; the caller reports start and finish
+        either way.
+        """
         ...

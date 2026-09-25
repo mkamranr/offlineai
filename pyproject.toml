@@ -106,6 +106,9 @@ ignore = [
 # The offline guard replaces socket functions, so it must accept their full
 # signatures even though it raises before using most of them.
 "src/offlineai/security/offline.py" = ["ARG001"]
+# NullReporter implements the whole progress protocol and deliberately
+# discards every argument; that is the entire point of it.
+"src/offlineai/progress.py" = ["ARG002"]
 
 [tool.mypy]
 python_version = "3.11"

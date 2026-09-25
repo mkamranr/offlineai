@@ -48,6 +48,9 @@ different answers.
 offlineai build examples/hello-ai
 ```
 
+Add `-j 8` to fetch artifacts more concurrently; the default of 4 is
+deliberately conservative.
+
 ```
 [1/10] Validating package definition        OK
 [2/10] Scanning for secrets                 OK  none found

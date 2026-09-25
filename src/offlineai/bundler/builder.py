@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from offlineai import __version__, layout
 from offlineai.artifacts.base import (
@@ -30,6 +31,7 @@ from offlineai.artifacts.base import (
     SourceRef,
 )
 from offlineai.artifacts.cache import ArtifactCache
+from offlineai.artifacts.fetcher import fetch_all
 from offlineai.artifacts.sources.http import HttpSource
 from offlineai.artifacts.sources.huggingface import HuggingFaceSource
 from offlineai.artifacts.sources.local import LocalSource
@@ -41,6 +43,7 @@ from offlineai.bundler.verifier import verify_bundle
 from offlineai.config.settings import Settings
 from offlineai.errors import InvalidPackageError, SourceError
 from offlineai.logging import get_logger
+from offlineai.progress import NullReporter, ProgressReporter
 from offlineai.resolver.package import load_package
 from offlineai.runtime.base import ContainerRuntime
 from offlineai.runtime.docker import DockerRuntime
@@ -91,9 +94,15 @@ class BundleBuilder:
         on_step: StepHook | None = None,
         sources: dict[str, ArtifactSource] | None = None,
         runtime: ContainerRuntime | None = None,
+        reporter: ProgressReporter | None = None,
+        workers: int | None = None,
     ) -> None:
         self.settings = settings
         self._container_runtime = runtime
+        self.reporter: ProgressReporter = reporter or NullReporter()
+        # A CLI flag wins over the configured value, which wins over the
+        # conservative default section 45 asks for.
+        self.workers = workers or settings.downloads.workers
         self.cache = ArtifactCache(settings.cache_dir)
         self._on_step = on_step
         self._sources: dict[str, ArtifactSource] = sources or {}
@@ -277,25 +286,48 @@ class BundleBuilder:
         )
 
     def _resolve_models(self, package: Package, base_dir: Path) -> list[ResolvedArtifact]:
-        out: list[ResolvedArtifact] = []
+        """Expand every model declaration, then fetch the files concurrently.
+
+        Expansion is cheap and serial; fetching is network-bound and is where
+        the time goes. Gathering all the requests first means one pool covers
+        every model rather than one pool per declaration, which matters when a
+        package has a small config repo alongside a hundred-shard checkpoint.
+        """
+        jobs: list[tuple[ArtifactSource, ArtifactRequest]] = []
+        licenses: dict[str, str] = {}
+
         for model in package.models:
             source_kind = model.source.type
             source = self._source_for(source_kind, base_dir)
-            locator = _locator_for(model.source)
             ref = SourceRef(
                 kind=source_kind,
-                locator=locator,
+                locator=_locator_for(model.source),
                 name=model.name,
                 artifact_type=ArtifactType.MODEL,
                 options=_source_options(model.source),
             )
             license_id = _license_for(source, model.source)
             for request in source.expand(ref):
-                resolved = self._fetch(source, request)
-                out.append(
-                    resolved if license_id is None else replace(resolved, license=license_id)
-                )
-        return out
+                jobs.append((source, request))
+                if license_id is not None:
+                    licenses[request.id] = license_id
+
+        if not jobs:
+            return []
+
+        self._report_total(jobs, "Downloading models")
+        resolved = fetch_all(jobs, self.cache, workers=self.workers, reporter=self.reporter)
+        return [
+            r if r.request.id not in licenses else replace(r, license=licenses[r.request.id])
+            for r in resolved
+        ]
+
+    def _report_total(
+        self, jobs: list[tuple[ArtifactSource, ArtifactRequest]], description: str
+    ) -> None:
+        """Give the aggregate bar a total, when the sources declared sizes."""
+        known = [j[1].expected_size for j in jobs if j[1].expected_size]
+        self.reporter.set_overall(description, sum(known) if known else None)
 
     def _resolve_containers(self, package: Package, base_dir: Path) -> list[ResolvedArtifact]:
         """Build or pull each declared image, then save it into the bundle.
@@ -310,6 +342,11 @@ class BundleBuilder:
         runtime = self._runtime()
         source = self._sources.get("oci") or OciSource(runtime)
 
+        # Deliberately serial. `docker save` writes gigabytes through the
+        # daemon, which serialises much of it anyway, and two concurrent saves
+        # mostly produce disk contention. The parallelism win is in models -
+        # many files, network-bound - not here, where there are usually four
+        # images at most.
         out: list[ResolvedArtifact] = []
         for container in package.containers:
             reference = str(container.reference)
@@ -411,9 +448,9 @@ class BundleBuilder:
         if kind == "local":
             return LocalSource(base_dir)
         if kind == "huggingface":
-            return HuggingFaceSource()
+            return cast("ArtifactSource", HuggingFaceSource())
         if kind == "http":
-            return HttpSource()
+            return cast("ArtifactSource", HttpSource())
         raise SourceError(
             f"no artifact source is registered for {kind!r}",
             details={

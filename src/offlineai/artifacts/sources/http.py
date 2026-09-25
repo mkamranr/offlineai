@@ -15,6 +15,7 @@ from offlineai.artifacts.base import ArtifactRequest, ResolvedArtifact, SourceRe
 from offlineai.artifacts.cache import ArtifactCache
 from offlineai.artifacts.download import download_resumable
 from offlineai.errors import SourceError
+from offlineai.progress import ProgressReporter, download_callback
 
 if TYPE_CHECKING:
     import httpx
@@ -53,7 +54,13 @@ class HttpSource:
             )
         ]
 
-    def fetch(self, request: ArtifactRequest, cache: ArtifactCache) -> ResolvedArtifact:
+    def fetch(
+        self,
+        request: ArtifactRequest,
+        cache: ArtifactCache,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> ResolvedArtifact:
         cache.ensure()
         with cache.partial(f"{self.kind}:{request.locator}") as staging:
             result = download_resumable(
@@ -62,6 +69,7 @@ class HttpSource:
                 client=self._http(),
                 expected_sha256=request.expected_sha256,
                 expected_size=request.expected_size,
+                progress=(download_callback(progress, request.id) if progress else None),
             )
             entry = cache.store_file(result.path, move=True)
 

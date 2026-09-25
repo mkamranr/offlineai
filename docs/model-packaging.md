@@ -124,6 +124,33 @@ Three behaviours worth knowing:
 - a file interrupted by a network error is kept, because that is what makes
   the next attempt a resume.
 
+## Concurrency
+
+Downloads run in parallel. The default is 4, which section 45 asks to keep
+conservative so a build does not saturate storage or the network:
+
+```bash
+offlineai build . --workers 8      # or -j 8
+```
+
+Or permanently:
+
+```yaml
+# ~/.offlineai/config.yaml
+downloads:
+  workers: 8
+```
+
+Concurrency never changes the bundle. Results are reassembled in declaration
+order whatever order they finish in, so the manifest — and therefore the
+bundle's hash — is identical at any worker count. There is a test that builds
+the same package at 1, 2, 4 and 16 workers and compares manifests.
+
+Container images are deliberately fetched serially. `docker save` writes
+gigabytes through the daemon, which serialises much of it anyway, and two
+concurrent saves mostly produce disk contention. The win is in models, where
+there are many files and the bottleneck is the network.
+
 ## Caching across bundles
 
 Artifacts are cached by content hash in `~/.offlineai/cache`, so a model used

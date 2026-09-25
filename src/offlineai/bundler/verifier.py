@@ -20,6 +20,7 @@ from offlineai.bundler.archive import BundleReader
 from offlineai.bundler.results import CheckResult, CheckStatus, VerifyResult
 from offlineai.errors import ChecksumMismatchError, VerificationError
 from offlineai.logging import get_logger
+from offlineai.progress import ProgressReporter
 from offlineai.schema.manifest import ArtifactType
 from offlineai.utils.hashing import CHUNK_SIZE
 
@@ -27,6 +28,12 @@ __all__ = ["verify_bundle"]
 
 logger = get_logger("bundler.verifier")
 
+#: Advancing a key the reporter never started still moves the aggregate,
+#: which is all verification needs - there is nothing useful to show
+#: per-artifact when each one is checked in a single pass.
+_OVERALL = "__verify__"
+
+#: Superseded by ProgressReporter; kept so existing callers keep working.
 ProgressHook = Callable[[str, int, int], None]
 
 #: Category labels, in the order section 11 prints them.
@@ -43,6 +50,7 @@ def verify_bundle(
     path: Path | str,
     *,
     progress: ProgressHook | None = None,
+    reporter: ProgressReporter | None = None,
 ) -> VerifyResult:
     """Verify every artifact against the manifest.
 
@@ -63,6 +71,11 @@ def verify_bundle(
 
         declared = {a.path: a for a in manifest.artifacts}
         total = len(declared)
+        # Byte-based, because on a 62 GB bundle "42 of 100 artifacts" says
+        # almost nothing about how long is left - the shards are not the same
+        # size as the config files.
+        if reporter is not None:
+            reporter.set_overall("Verifying", manifest.total_size or None)
 
         for entry, stream in reader.iter_artifacts():
             digest = hashlib.sha256()
@@ -79,6 +92,9 @@ def verify_bundle(
                     details={"Detail": str(exc)},
                     action="Re-copy the bundle from the builder and verify again.",
                 ) from exc
+
+            if reporter is not None:
+                reporter.advance(_OVERALL, size)
 
             actual = digest.hexdigest()
             if actual != entry.sha256 or size != entry.size:

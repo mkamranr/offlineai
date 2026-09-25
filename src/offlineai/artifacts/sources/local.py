@@ -13,6 +13,7 @@ from typing import ClassVar
 from offlineai.artifacts.base import ArtifactRequest, ResolvedArtifact, SourceRef
 from offlineai.artifacts.cache import ArtifactCache
 from offlineai.errors import SourceError
+from offlineai.progress import ProgressReporter
 from offlineai.schema.manifest import ArtifactType
 
 __all__ = ["LocalSource"]
@@ -47,7 +48,13 @@ class LocalSource:
             action="Check the path in your package definition.",
         )
 
-    def fetch(self, request: ArtifactRequest, cache: ArtifactCache) -> ResolvedArtifact:
+    def fetch(
+        self,
+        request: ArtifactRequest,
+        cache: ArtifactCache,
+        *,
+        progress: ProgressReporter | None = None,  # noqa: ARG002 - a local copy completes faster than a bar would render
+    ) -> ResolvedArtifact:
         source = Path(request.locator)
         if not source.is_file():
             raise SourceError(f"{source} disappeared during the build")

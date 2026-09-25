@@ -22,6 +22,7 @@ from offlineai.bundler.archive import BundleReader
 from offlineai.config.settings import Settings
 from offlineai.errors import InsufficientDiskError, RegistryError
 from offlineai.logging import get_logger
+from offlineai.progress import ProgressReporter
 from offlineai.registry.db import open_registry_db, transaction
 from offlineai.registry.store import ArtifactStore
 from offlineai.schema.manifest import Manifest
@@ -32,6 +33,8 @@ from offlineai.utils.sizes import format_bytes
 __all__ = ["ImportResult", "PackageRecord", "Registry"]
 
 logger = get_logger("registry")
+
+_OVERALL = "__import__"
 
 ProgressHook = Callable[[str, int, int], None]
 
@@ -88,6 +91,7 @@ class Registry:
         bundle_path: Path | str,
         *,
         progress: ProgressHook | None = None,
+        reporter: ProgressReporter | None = None,
         force: bool = False,
     ) -> ImportResult:
         """Import a bundle, streaming its artifacts into the store.
@@ -138,6 +142,8 @@ class Registry:
                 header = reader.read_header()
                 manifest = header.manifest
                 total = len(manifest.artifacts)
+                if reporter is not None:
+                    reporter.set_overall("Importing", manifest.total_size or None)
 
                 for entry, stream in reader.iter_artifacts():
                     was_present = self.store.has(entry.sha256)
@@ -151,6 +157,8 @@ class Registry:
                         deduplicated += 1
                     imported += 1
                     total_bytes += stored.size
+                    if reporter is not None:
+                        reporter.advance(_OVERALL, stored.size)
                     rows.append(
                         (stored.sha256, entry.type.value, stored.size, entry.id, entry.path)
                     )

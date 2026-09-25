@@ -25,6 +25,7 @@ from offlineai.artifacts.cache import ArtifactCache
 from offlineai.artifacts.download import download_resumable
 from offlineai.errors import SourceError
 from offlineai.logging import get_logger
+from offlineai.progress import ProgressReporter, download_callback
 from offlineai.schema.manifest import ArtifactType
 
 if TYPE_CHECKING:
@@ -180,7 +181,13 @@ class HuggingFaceSource:
 
     # -- fetching --------------------------------------------------------
 
-    def fetch(self, request: ArtifactRequest, cache: ArtifactCache) -> ResolvedArtifact:
+    def fetch(
+        self,
+        request: ArtifactRequest,
+        cache: ArtifactCache,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> ResolvedArtifact:
         repo = str(request.metadata["repo"])
         revision = str(request.metadata["revision"])
         filename = str(request.metadata["file"])
@@ -197,6 +204,7 @@ class HuggingFaceSource:
                 expected_sha256=request.expected_sha256,
                 expected_size=request.expected_size,
                 headers=headers,
+                progress=(download_callback(progress, request.id) if progress else None),
             )
             entry = cache.store_file(result.path, move=True)
 
