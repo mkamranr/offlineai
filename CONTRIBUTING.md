@@ -18,11 +18,21 @@ OFFLINEAI_TEST_OFFLINE=1 pytest
 
 All four must pass. `mypy` runs in strict mode.
 
-The end-to-end air-gap tests need Docker and are opt-in:
+Two opt-in suites need Docker:
 
 ```bash
-pytest -m airgap_e2e
+pytest -m airgap_e2e    # install inside `docker run --network none`
+pytest -m linux_e2e     # run the suite inside a Linux container
 ```
+
+**If you develop on macOS, run `pytest -m linux_e2e` before opening a pull
+request.** Linux is the supported target (section 77.12), and on macOS every
+local run takes the installer's *degraded dev-mode* branch — the OS check
+reports WARNING, OS-package handling is skipped, and GPU detection never
+executes. None of that code runs locally, so it is easy to break it without
+noticing. The containerised suite is the cheapest way to find out.
+
+It does not cover GPUs. Nothing here does; that needs real hardware.
 
 ## The rule that matters most
 

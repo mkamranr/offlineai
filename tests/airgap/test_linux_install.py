@@ -42,9 +42,7 @@ def docker_available() -> bool:
     )
 
 
-requires_docker = pytest.mark.skipif(
-    not docker_available(), reason="Docker is not available"
-)
+requires_docker = pytest.mark.skipif(not docker_available(), reason="Docker is not available")
 
 
 def run_in_linux(script: str, *, timeout: int = 1800) -> subprocess.CompletedProcess[str]:
@@ -56,13 +54,23 @@ def run_in_linux(script: str, *, timeout: int = 1800) -> subprocess.CompletedPro
     """
     return subprocess.run(  # noqa: S603
         [
-            "docker", "run", "--rm",
-            "-v", f"{PROJECT_ROOT}:/src:ro",
-            "--tmpfs", "/work:exec,size=2g",
-            "-w", "/work",
-            "-e", "OFFLINEAI_TEST_OFFLINE=1",
-            "-e", "PIP_DISABLE_PIP_VERSION_CHECK=1",
-            IMAGE, "bash", "-ec", script,
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{PROJECT_ROOT}:/src:ro",
+            "--tmpfs",
+            "/work:exec,size=2g",
+            "-w",
+            "/work",
+            "-e",
+            "OFFLINEAI_TEST_OFFLINE=1",
+            "-e",
+            "PIP_DISABLE_PIP_VERSION_CHECK=1",
+            IMAGE,
+            "bash",
+            "-ec",
+            script,
         ],
         capture_output=True,
         text=True,
@@ -71,10 +79,17 @@ def run_in_linux(script: str, *, timeout: int = 1800) -> subprocess.CompletedPro
     )
 
 
-#: Copy the source out of the read-only mount, then install and run.
+#: Copy the project out of the read-only mount, then install and run.
+#:
+#: Copies everything rather than an explicit file list. The first version
+#: listed the files it thought were needed, omitted docs/, and produced
+#: fifteen failures that looked like Linux problems and were not. A whole-tree
+#: copy minus the obvious junk cannot drift as the project grows.
 SETUP = """
-cp -r /src/src /src/tests /src/pyproject.toml /src/README.md /src/LICENSE /work/
-cp -r /src/examples /work/
+tar -C /src -cf - \
+    --exclude=.venv --exclude=.git --exclude=__pycache__ \
+    --exclude='*.pyc' --exclude=.pytest_cache --exclude=.mypy_cache \
+    --exclude=.ruff_cache --exclude='*.offlineai' . | tar -C /work -xf -
 pip install --quiet -e '.[dev,builder]' 2>&1 | tail -2
 """
 
@@ -108,7 +123,9 @@ class TestTheLinuxBranchesExecute:
     def test_install_is_not_in_dev_mode(self) -> None:
         """On macOS every install reports dev_mode=True and skips the OS
         package and GPU steps. On the supported platform it must not."""
-        script = SETUP + """
+        script = (
+            SETUP
+            + """
 mkdir -p pkg/weights
 echo '{"model_type":"demo"}' > pkg/weights/config.json
 head -c 4096 /dev/zero > pkg/weights/model.safetensors
@@ -149,6 +166,7 @@ print(json.dumps({
 }))
 PY
 """
+        )
         result = run_in_linux(script)
         assert result.returncode == 0, f"{result.stdout[-3000:]}\n{result.stderr[-2000:]}"
 
@@ -165,7 +183,9 @@ PY
         """Materialising a 48 GB checkpoint copies it unless hard links work.
         On macOS this falls back to a copy often enough that the link path is
         effectively untested."""
-        script = SETUP + """
+        script = (
+            SETUP
+            + """
 mkdir -p pkg/weights
 head -c 65536 /dev/urandom > pkg/weights/model.safetensors
 cat > pkg/offlineai.yaml <<'YAML'
@@ -203,23 +223,31 @@ materialised = next(
 print("LINKS", os.stat(materialised).st_nlink)
 PY
 """
+        )
         result = run_in_linux(script)
         assert result.returncode == 0, f"{result.stdout[-3000:]}\n{result.stderr[-2000:]}"
-        links = int(
-            next(l for l in result.stdout.splitlines() if l.startswith("LINKS")).split()[1]
-        )
+        reported = next(line for line in result.stdout.splitlines() if line.startswith("LINKS"))
+        links = int(reported.split()[1])
         assert links >= 2, (
             f"the model file has {links} link(s); it was copied rather than hard "
             "linked, which doubles the disk cost of every checkpoint"
         )
 
     def test_the_cli_works_on_linux(self) -> None:
-        script = SETUP + """
+        script = (
+            SETUP
+            + """
 offlineai --version
 offlineai init
 offlineai doctor --help > /dev/null
-offlineai --json doctor | python -c "import json,sys; d=json.load(sys.stdin); print('OS_CHECK', [c['detail'] for c in d['checks'] if c['name']=='OS'][0])"
+offlineai --json doctor > doctor.json
+python - <<'PY'
+import json
+checks = json.load(open("doctor.json"))["checks"]
+print("OS_CHECK", next(c["detail"] for c in checks if c["name"] == "OS"))
+PY
 """
+        )
         result = run_in_linux(script)
         assert result.returncode == 0, f"{result.stdout[-3000:]}\n{result.stderr[-2000:]}"
         assert "linux" in result.stdout

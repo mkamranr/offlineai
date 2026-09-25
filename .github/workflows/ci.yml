@@ -72,6 +72,28 @@ jobs:
           fi
           echo "builder extras correctly absent"
 
+  # GitHub runners are already Linux, so the containerised Linux suite is
+  # redundant there - the `test` job above IS the Linux run. This job exists
+  # for developers on macOS, where every local run otherwise takes the
+  # degraded dev-mode branch and the Linux code path never executes.
+  linux-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,builder]"
+      - name: the installer must not report dev mode on its supported platform
+        run: |
+          python - <<'PY'
+          import platform, sys
+          if platform.system().lower() != "linux":
+              sys.exit("this job must run on Linux")
+          print("platform:", platform.system().lower())
+          PY
+      - run: OFFLINEAI_TEST_OFFLINE=1 pytest tests/unit tests/security tests/integration -q
+
   airgap-e2e:
     runs-on: ubuntu-latest
     steps:
