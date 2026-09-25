@@ -178,6 +178,50 @@ Install the NVIDIA container toolkit on the target, then:
 offlineai install <package> --gpus 0,1
 ```
 
+## Profiles and the lock file
+
+### `check --profile` reports SKIPPED for something I expected it to check
+
+The profile does not state it. A profile only answers for what it describes,
+and anything omitted is reported `SKIPPED` with a reason rather than assumed
+satisfied — otherwise a profile could quietly approve a bundle for hardware it
+never examined.
+
+Add the field, or capture the profile from the real machine instead of writing
+it by hand:
+
+```bash
+offlineai doctor --save-profile target.yaml
+```
+
+### A Linux profile is reported as an unsupported platform
+
+Check the `os.family` spelling. Known distributions (ubuntu, debian, rhel,
+rocky, fedora, suse, amazonlinux and others) are recognised as Linux; an
+unrecognised name is passed through as-is and will warn.
+
+### `--locked` fails and I did not change anything
+
+Something the package depends on moved. The message names it:
+
+```
+Drift:
+artifacts/models/demo/config.json: digest changed, 7ea87318… -> 1be08cac…
+```
+
+A mutable reference is the usual cause — `revision: main` on a model, or a
+re-tagged image. That is precisely what the lock exists to catch. If the change
+is intended:
+
+```bash
+offlineai build . --update-lock     # then commit the new lock
+```
+
+### `--locked` says offlineai.lock does not exist
+
+Build once without it to generate the file, then commit it alongside the
+package definition.
+
 ## Signatures
 
 ### `the bundle was signed by a different key than the one supplied`
@@ -201,6 +245,8 @@ offlineai build . --sign-key signing-key.pem        # embedded, at build time
 ```bash
 offlineai doctor                       # is this host ready at all
 offlineai check <bundle>               # is it ready for this bundle
+offlineai check <bundle> --profile <f> # is the TARGET ready, from anywhere
+offlineai doctor --save-profile <f>    # capture this host as a profile
 offlineai inspect <bundle>             # what is in the bundle
 offlineai graph <package>              # what it is made of and where from
 offlineai network-check <package>      # will it reach out at run time

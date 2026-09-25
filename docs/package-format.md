@@ -229,6 +229,75 @@ of the tar. `docker save` is not byte-reproducible — saving the same image by
 tag and by digest gives different archives — so comparing tar bytes would
 report drift on an image that never changed.
 
+## Target profiles
+
+A profile is the other YAML you write: a description of a machine you might
+deploy to (specification section 5.6).
+
+```yaml
+# h100-server.yaml
+name: h100-server
+
+os:
+  family: ubuntu          # any Linux distribution; mapped to the platform
+  version: "24.04"
+
+architecture: amd64       # amd64 | arm64
+
+gpu:
+  vendor: nvidia
+  model: NVIDIA H100 80GB HBM3
+  memory_gb: 80           # per device, as the card is sold
+  minimum_driver: "550"
+  count: 8
+
+runtime:
+  docker: ">=27"
+
+memory_gb: 1024
+cpu_cores: 112
+```
+
+```bash
+offlineai check qwen-vllm-1.0.0.offlineai --profile h100-server.yaml
+```
+
+Without `--profile`, `check` validates the machine it is running on. On a
+builder that is the wrong machine — the target is air-gapped and elsewhere — so
+the only answer you can get is about hardware nobody is deploying to.
+
+### Anything omitted is SKIPPED, never satisfied
+
+A profile that says nothing about RAM does not approve a bundle needing 512 GB:
+
+```
+RAM:  SKIPPED  not stated by profile 'h100-server'
+```
+
+This is what makes the feature safe rather than merely convenient. Inventing a
+default would let a profile quietly approve a bundle for hardware it was never
+checked against — worse than having no profile at all.
+
+The one exception is the GPU: a profile that describes no GPU is describing a
+machine without one, so a bundle requiring one **fails** rather than skipping.
+
+### Prefer a captured profile to a written one
+
+```bash
+# on the air-gapped target
+offlineai doctor --save-profile h100-server.yaml --profile-name rack-07
+```
+
+Carry that file back across the gap. The builder is then checking against
+measured hardware rather than somebody's recollection of it. A captured profile
+gives the same verdict as checking the live host, which the test suite asserts.
+
+Note what a profile check does and does not establish: it narrows the question
+from "will this run?" to "will this run on a machine that looks like this?".
+Nothing here verifies the target matches its own description.
+
+See `examples/profiles/h100-server.yaml`.
+
 ## Validating without building
 
 ```bash

@@ -103,6 +103,46 @@ image, remove path — and path removal is confined to the install tree. A
 tampered journal cannot turn a failed install into a way to delete arbitrary
 files.
 
+### Concurrency never changes the bundle
+
+Artifacts are fetched in a thread pool, but results are reassembled in request
+order however they complete. The manifest is built from that list and section
+34 wants reproducible bundles, so a manifest whose artifact order depended on
+which download finished first would not be reproducible at all. There is a test
+that builds the same package at 1, 2, 4 and 16 workers and compares manifests
+byte for byte.
+
+Container images are deliberately fetched serially. `docker save` writes
+gigabytes through a daemon that serialises much of it anyway, and two
+concurrent saves mostly produce disk contention. The win is in models — many
+files, network-bound — where there are hundreds rather than four.
+
+### Pins constrain resolution rather than being checked afterwards
+
+`offlineai.lock` records what each declaration resolved to, and those pins are
+fed **back into** the next resolution: `revision: main` fetches the recorded
+commit rather than wherever the branch has moved, and a re-tagged image is
+pulled by digest. A lock that were only verified after the fact would tell you
+a build had drifted; one whose pins constrain resolution stops it drifting.
+
+Container images are compared on their registry digest, not the bytes of the
+tar. `docker save` is not byte-reproducible — saving the same image by tag and
+by digest gives different archives — so comparing tar bytes would report drift
+on an image that never changed.
+
+### A profile answers the question the builder can actually ask
+
+`check` normally validates the machine it runs on. On a builder that is the
+wrong machine: the target is air-gapped and elsewhere. A target profile
+(section 5.6) describes the destination so the question can be asked from
+anywhere.
+
+A profile only has to produce a `HardwareReport`; every rule about what
+satisfies what stays in `hardware/compat.py`, so a profile check and a live
+check cannot disagree about the rules. A field the profile omits yields `None`
+and is reported `SKIPPED`, never satisfied — inventing a default would let a
+profile quietly approve a bundle for hardware it was never checked against.
+
 ### Unevaluated is never "pass"
 
 Every compatibility check is `PASS`, `FAIL` or `SKIPPED(reason)`. A GPU check
@@ -114,17 +154,23 @@ stronger, because nothing stronger is true.
 
 | Module | Responsibility |
 |---|---|
-| `schema/` | Pydantic models for `offlineai.yaml`, the manifest, overrides |
+| `schema/` | Pydantic models for every YAML a user writes or a bundle carries: `offlineai.yaml`, the manifest, the lock file, target profiles, config overrides |
 | `resolver/` | Loading and validating a package definition |
-| `artifacts/` | The source interface, the content-addressed cache, resumable downloads |
+| `artifacts/` | The source interface, the content-addressed cache, resumable downloads, the concurrent fetcher |
 | `bundler/` | Archive read/write, build, verify, inspect, diff, graph |
 | `registry/` | SQLite index and refcounted content-addressed storage |
 | `installer/` | The install pipeline, transactions, rollback |
 | `runtime/` | Container engine abstraction, Docker, an in-memory fake |
-| `hardware/` | Detection and requirement matching |
-| `security/` | Safe extraction, signing, secret detection, offline enforcement |
+| `hardware/` | Detection, requirement matching, storage planning |
+| `security/` | Safe extraction, signing, secret detection, offline enforcement, network audit |
 | `sbom/` | CycloneDX generation and licence reporting |
+| `config/` | Layered settings: defaults, config file, environment, flags |
+| `plugins/` | Entry-point discovery for third-party artifact sources |
+| `utils/` | Streaming hashes, filesystem helpers, subprocess wrapper, size formatting |
 | `cli/` | Commands and the single output renderer |
+| `progress.py` | The progress protocol. Outside `cli/` on purpose: the builder and the sources report progress, and neither should import the command-line layer |
+| `layout.py` | The bundle's canonical member paths and their order |
+| `errors.py`, `exitcodes.py` | The exception hierarchy and the section 66 codes it maps to |
 
 ## Testing
 

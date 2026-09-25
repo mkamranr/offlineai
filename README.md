@@ -30,8 +30,17 @@ produces a single self-describing bundle:
 my-ai-app-1.0.0.offlineai
 ```
 
-containing model weights, Docker images, Python wheels, OS packages, configuration,
+containing model weights, Docker images, Python wheels, configuration,
 checksums, an SBOM, license metadata, startup scripts and documentation.
+
+It also writes **`offlineai.lock`** beside your package definition. Commit it:
+it records the commit each model revision resolved to and the digest behind
+each image tag, so a rebuild six months from now produces the same bundle
+rather than whatever those tags point at by then.
+
+```bash
+offlineai build . --locked     # fail if anything has drifted. Use this in CI.
+```
 
 Transfer it by USB or any approved one-way channel. Then, on a machine with **no network
 access at all**:
@@ -42,6 +51,18 @@ offlineai import  my-ai-app-1.0.0.offlineai
 offlineai install my-ai-app
 offlineai status  my-ai-app
 ```
+
+And before you carry 62 GB anywhere, ask whether the target can even run it —
+from wherever you happen to be:
+
+```bash
+offlineai check my-ai-app-1.0.0.offlineai --profile h100-server.yaml
+```
+
+`check` on its own validates the machine you are standing on, which on a
+builder is the wrong machine. A target profile describes the destination
+instead. Capture one from the real hardware with
+`offlineai doctor --save-profile`.
 
 ## The guarantee
 

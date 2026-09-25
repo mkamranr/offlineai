@@ -51,6 +51,11 @@ offlineai build examples/hello-ai
 Add `-j 8` to fetch artifacts more concurrently; the default of 4 is
 deliberately conservative.
 
+This also writes `offlineai.lock` next to your definition — commit it. It pins
+the commit behind each model revision and the digest behind each image tag, so
+a later rebuild resolves to the same artifacts. `offlineai build . --locked`
+then fails if anything has drifted, which is what you want in CI.
+
 ```
 [1/10] Validating package definition        OK
 [2/10] Scanning for secrets                 OK  none found
@@ -86,6 +91,15 @@ offlineai check hello-ai-1.0.0.offlineai
 
 Tells you whether this host satisfies the bundle's requirements, and what
 installing it will cost in disk.
+
+On a builder, "this host" is the wrong host — the target is elsewhere. Check
+against a description of it instead:
+
+```bash
+offlineai check hello-ai-1.0.0.offlineai --profile h100-server.yaml
+```
+
+Anything the profile does not state is reported `SKIPPED`, never satisfied.
 
 ## 5. Verify
 
