@@ -112,8 +112,8 @@ def check_compatibility(
             CheckResult(
                 name="CPU architecture",
                 status=CheckStatus.FAILED,
-                detail=f"requires {', '.join(sorted(wanted))}; this host is "
-                f"{hardware.architecture}",
+                detail=f"requires {', '.join(sorted(wanted))}; "
+                f"{hardware.describes} is {hardware.architecture}",
             )
         )
 
@@ -147,7 +147,7 @@ def check_compatibility(
                 name="CPU cores",
                 status=CheckStatus.OK if ok else CheckStatus.FAILED,
                 detail=f"requires {requirements.minimum_cpu_cores}, "
-                f"this host has {hardware.cpu.cores}",
+                f"{hardware.describes} has {hardware.cpu.cores}",
             )
         )
 
@@ -158,7 +158,7 @@ def check_compatibility(
                 CheckResult(
                     name="RAM",
                     status=CheckStatus.SKIPPED,
-                    detail="memory size could not be determined on this host",
+                    detail=f"not stated by {hardware.describes}",
                 )
             )
         else:
@@ -168,7 +168,7 @@ def check_compatibility(
                     name="RAM",
                     status=CheckStatus.OK if ok else CheckStatus.FAILED,
                     detail=f"requires {requirements.minimum_ram_gb} GB, "
-                    f"this host has {hardware.memory.total_gb:.1f} GB",
+                    f"{hardware.describes} has {hardware.memory.total_gb:.1f} GB",
                 )
             )
 
@@ -251,7 +251,7 @@ def check_compatibility(
                 CheckResult(
                     name="GPU count",
                     status=CheckStatus.FAILED,
-                    detail=f"requires {gpu.count}, this host has {len(hardware.gpus)}",
+                    detail=f"requires {gpu.count}, {hardware.describes} has {len(hardware.gpus)}",
                 )
             )
 
@@ -292,7 +292,7 @@ def check_compatibility(
                         name="GPU driver",
                         status=CheckStatus.OK if ok else CheckStatus.FAILED,
                         detail=f"requires {gpu.minimum_driver} or newer, "
-                        f"this host has {hardware.nvidia_driver}",
+                        f"{hardware.describes} has {hardware.nvidia_driver}",
                     )
                 )
 

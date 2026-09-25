@@ -26,6 +26,43 @@ offlineai network-check ./my-package     # before building, not after
 into build-time and runtime. A runtime one will fail on the target, and
 learning that here costs seconds instead of a transfer cycle.
 
+### 1b. Check against the target, not against yourself
+
+`offlineai check` normally validates the machine it runs on. On a builder that
+is the wrong machine — the target is air-gapped and elsewhere.
+
+```bash
+offlineai check my-package-1.0.0.offlineai --profile h100-server.yaml
+```
+
+```
+Evaluated against profile: h100-server   (NOT this host)
+
+CPU architecture:  OK  amd64
+Operating system:  OK  linux ubuntu 24.04
+RAM:               OK  requires 512 GB, profile 'h100-server' has 1024.0 GB
+GPU VRAM:          OK  requires 80 GB per device, largest device has 80 GB
+
+Result: COMPATIBLE
+```
+
+Anything the profile does not state is reported `SKIPPED`, never satisfied —
+a profile silent about RAM must not approve a bundle that needs 512 GB.
+
+**Prefer a captured profile over a written one.** On the target:
+
+```bash
+offlineai doctor --save-profile h100-server.yaml --profile-name rack-07
+```
+
+Carry that small file back across the gap. The builder is then checking
+against measured ground truth rather than somebody's recollection of the
+hardware. See `examples/profiles/h100-server.yaml`.
+
+A profile check does not verify that the target matches its own description.
+It narrows the question from "will this run?" to "will this run on a machine
+that looks like this?", which is as far as anything can go without being there.
+
 ### 2. Build and sign
 
 ```bash
@@ -187,6 +224,7 @@ and would not appear as an artifact difference at all.
 ## Checklist
 
 - [ ] `network-check` clean on the builder
+- [ ] `check --profile` passes against the target's captured profile
 - [ ] Built with `--sign-key`
 - [ ] SHA-256 recorded and compared after transfer
 - [ ] Public key carried by a different route

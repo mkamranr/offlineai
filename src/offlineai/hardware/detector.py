@@ -119,6 +119,11 @@ class HardwareReport:
     #: Why GPU detection produced nothing, when it did.
     gpu_detail: str | None = None
     nvidia_driver: str | None = None
+    #: What this report describes, for use in messages. A live detection says
+    #: "this host"; a target profile says so instead, because "could not be
+    #: determined on this host" is actively misleading when no host was
+    #: examined - the profile simply did not say.
+    describes: str = "this host"
 
     @property
     def is_linux(self) -> bool:

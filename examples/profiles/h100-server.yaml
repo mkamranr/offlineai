@@ -1,0 +1,32 @@
+# A target environment description (specification section 5.6).
+#
+# `offlineai check` normally validates a bundle against the machine it is
+# running on. On a builder that is the wrong machine - the target is
+# air-gapped and elsewhere. A profile lets the question be asked from anywhere:
+#
+#   offlineai check qwen-vllm-1.0.0.offlineai --profile h100-server.yaml
+#
+# Anything omitted here is reported as SKIPPED, never as satisfied. Prefer a
+# profile captured from the real machine over one written by hand:
+#
+#   offlineai doctor --save-profile h100-server.yaml     # on the target
+name: h100-server
+
+os:
+  family: ubuntu
+  version: "24.04"
+
+architecture: amd64
+
+gpu:
+  vendor: nvidia
+  model: NVIDIA H100 80GB HBM3
+  minimum_driver: "550"
+  memory_gb: 80
+  count: 8
+
+runtime:
+  docker: ">=27"
+
+memory_gb: 1024
+cpu_cores: 112

@@ -19,6 +19,7 @@ from offlineai.hardware.compat import (
 from offlineai.hardware.detector import HardwareDetector
 from offlineai.registry.registry import Registry
 from offlineai.runtime.docker import DockerRuntime
+from offlineai.schema.profile import Profile, load_profile
 from offlineai.utils.fs import free_space
 from offlineai.utils.sizes import format_bytes
 
@@ -58,11 +59,26 @@ def check(
     target: Annotated[
         str, typer.Argument(help="A bundle path, or the name of an imported package.")
     ],
+    profile_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--profile",
+            "-p",
+            help="Check against a described target environment instead of this "
+            "machine. Capture one with 'offlineai doctor --save-profile'.",
+        ),
+    ] = None,
 ) -> None:
-    """Check whether this host satisfies a bundle's requirements.
+    """Check whether a host satisfies a bundle's requirements.
 
     Reads only the bundle header, so this is instant at any size and installs
     nothing.
+
+    Without --profile this checks the machine you are on. On a builder that is
+    the wrong machine: the target is air-gapped and elsewhere. Pass a profile
+    to ask the question that matters.
+
+      offlineai check qwen-vllm-1.0.0.offlineai --profile h100-server.yaml
     """
     context: Context = ctx.obj
     output = context.output
@@ -76,14 +92,31 @@ def check(
         manifest = record.manifest()
         bundle_bytes = record.total_size
 
-    hardware = HardwareDetector(disk_path=context.settings.data_dir).detect()
-    storage = estimate_storage(
+    profile = load_profile(profile_path) if profile_path else None
+
+    if profile is not None:
+        hardware = profile.to_hardware_report()
+        runtime = profile.to_runtime_availability()
+        # A profile describes a class of machine, not how much space it has
+        # free today, so there is nothing to check the estimate against. It is
+        # still computed and reported, because the operator needs to know what
+        # the bundle will cost on the target.
+        storage = estimate_storage(manifest, bundle_bytes=bundle_bytes, available_bytes=0)
+    else:
+        hardware = HardwareDetector(disk_path=context.settings.data_dir).detect()
+        runtime = DockerRuntime().availability()
+        storage = estimate_storage(
+            manifest,
+            bundle_bytes=bundle_bytes,
+            available_bytes=free_space(context.settings.data_dir),
+        )
+
+    report = check_compatibility(
         manifest,
-        bundle_bytes=bundle_bytes,
-        available_bytes=free_space(context.settings.data_dir),
+        hardware,
+        runtime=runtime,
+        storage=None if profile is not None else storage,
     )
-    runtime = DockerRuntime().availability()
-    report = check_compatibility(manifest, hardware, runtime=runtime, storage=storage)
 
     output.emit_raw(
         {
@@ -93,6 +126,8 @@ def check(
             "verdict": report.verdict,
             "checks": [c.model_dump(mode="json") for c in report.checks],
             "warnings": report.warnings,
+            "profile": profile.name if profile else None,
+            "evaluated_against": "profile" if profile else "this host",
             "storage": {
                 "artifact_storage": storage.artifact_storage_bytes,
                 "container_storage": storage.container_storage_bytes,
@@ -108,6 +143,14 @@ def check(
     output.line("Hardware Compatibility")
     output.line()
     output.line(f"Package: {manifest.package.name} {manifest.package.version}")
+    if profile is not None:
+        # Unmistakable: a profile result mistaken for a real one is the
+        # failure mode that would actually hurt someone.
+        output.line()
+        output.line(
+            f"Evaluated against profile: {profile.name}   (NOT this host)",
+            style="bold yellow",
+        )
     output.line()
     _print_checks(context, report.checks)
 
@@ -124,10 +167,21 @@ def check(
         output.line(f"  {label:<20}{format_bytes(value):>12}")
     output.line("  " + "-" * 32)
     output.line(f"  {'Recommended free':<20}{format_bytes(storage.recommended_bytes):>12}")
-    output.line(f"  {'Available':<20}{format_bytes(storage.available_bytes):>12}")
-    if not storage.sufficient:
+    if profile is None:
+        output.line(f"  {'Available':<20}{format_bytes(storage.available_bytes):>12}")
+        if not storage.sufficient:
+            output.line()
+            output.warn(f"Insufficient disk space: {format_bytes(storage.shortfall_bytes)} short.")
+    else:
+        # A profile describes a class of machine, not how much space it has
+        # free today. Printing "0 B available" and a shortfall would be a
+        # fabricated failure, which is worse than saying nothing.
         output.line()
-        output.warn(f"Insufficient disk space: {format_bytes(storage.shortfall_bytes)} short.")
+        output.line(
+            "  A profile does not state free space, so this is what the target will\n"
+            "  need rather than a check against what it has.",
+            style="dim",
+        )
     output.line()
     output.line(
         "  Import streams into content-addressed storage rather than extracting,",
@@ -145,16 +199,47 @@ def check(
     )
     if report.compatible:
         output.line()
-        output.line(COMPATIBILITY_CAVEAT, style="dim")
+        if profile is not None:
+            # A profile adds a second layer of "we have not actually looked":
+            # nothing here verifies the target matches its own description.
+            output.line(
+                "Requirements satisfied against the profile. This does not verify "
+                "that the\ntarget machine matches the profile, and runtime success "
+                "is not guaranteed.",
+                style="dim",
+            )
+        else:
+            output.line(COMPATIBILITY_CAVEAT, style="dim")
     else:
         raise typer.Exit(4)
 
 
-def doctor(ctx: typer.Context) -> None:
+def doctor(
+    ctx: typer.Context,
+    save_profile: Annotated[
+        Path | None,
+        typer.Option(
+            "--save-profile",
+            help="Write this host's description to a file, for use with "
+            "'offlineai check --profile' on a builder elsewhere.",
+        ),
+    ] = None,
+    profile_name: Annotated[
+        str | None,
+        typer.Option("--profile-name", help="Name recorded in the saved profile."),
+    ] = None,
+) -> None:
     """Check that this host is ready to install and run packages.
 
     Bundle-independent: this reports on the environment, not on any particular
     workload.
+
+    With --save-profile it also writes a description of this machine. Run it on
+    the air-gapped target, carry the file back, and a builder can then check
+    bundles against measured ground truth rather than a hand-written guess:
+
+      offlineai doctor --save-profile h100-server.yaml
+      offlineai check <bundle> --profile h100-server.yaml
     """
     context: Context = ctx.obj
     output = context.output
@@ -286,6 +371,7 @@ def doctor(ctx: typer.Context) -> None:
             "overall": overall,
             "checks": [c.model_dump(mode="json") for c in checks],
             "warnings": warnings,
+            "saved_profile": str(save_profile) if save_profile else None,
             "gpus": [
                 {
                     "index": g.index,
@@ -322,6 +408,20 @@ def doctor(ctx: typer.Context) -> None:
         output.line()
         for warning in warnings:
             output.warn(warning)
+
+    if save_profile is not None:
+        import socket
+
+        name = profile_name or socket.gethostname() or "captured-host"
+        profile = Profile.from_hardware_report(hardware, name=name)
+        save_profile.parent.mkdir(parents=True, exist_ok=True)
+        save_profile.write_text(profile.to_yaml())
+        output.line()
+        output.line(f"Profile written: {save_profile}  (name: {name})")
+        output.line(
+            "Carry it to a builder and use it with:\n"
+            f"  offlineai check <bundle> --profile {save_profile.name}"
+        )
 
     output.line()
     output.line(f"Overall: {overall}", style="bold red" if failed else "bold green")
