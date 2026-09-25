@@ -20,11 +20,12 @@ Layout::
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
 
@@ -41,6 +42,15 @@ class CacheEntry:
     sha256: str
     path: Path
     size: int
+    #: Provenance recorded when the reference was stored.
+    #:
+    #: Without this a rebuild that hits the cache produces a manifest with no
+    #: source and no origin digest - so section 16's "record the immutable
+    #: digest" and section 34's provenance both quietly stop working on the
+    #: second build, which is the common case.
+    source: str | None = None
+    digest: str | None = None
+    license: str | None = None
 
 
 class ArtifactCache:
@@ -156,20 +166,51 @@ class ArtifactCache:
         ref = self._ref_path(source_kind, key)
         if not ref.is_file():
             return None
-        digest = ref.read_text().strip()
-        entry = self.get(digest)
+
+        raw = ref.read_text().strip()
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            # A reference written before provenance was recorded: a bare
+            # digest. Still usable, just without the extra fields.
+            record = {"sha256": raw}
+
+        entry = self.get(str(record.get("sha256", "")))
         if entry is None:
             # Content was pruned; the dangling reference is useless.
             ref.unlink(missing_ok=True)
             return None
-        logger.debug("cache hit %s:%s -> %s", source_kind, key, digest[:12])
-        return entry
 
-    def put_ref(self, source_kind: str, key: str, sha256: str) -> None:
+        logger.debug("cache hit %s:%s -> %s", source_kind, key, entry.sha256[:12])
+        return replace(
+            entry,
+            source=record.get("source"),
+            digest=record.get("digest"),
+            license=record.get("license"),
+        )
+
+    def put_ref(
+        self,
+        source_kind: str,
+        key: str,
+        sha256: str,
+        *,
+        source: str | None = None,
+        digest: str | None = None,
+        license_id: str | None = None,
+    ) -> None:
         ref = self._ref_path(source_kind, key)
         ref.parent.mkdir(parents=True, exist_ok=True)
+        record = {"sha256": sha256.lower()}
+        for field, value in (
+            ("source", source),
+            ("digest", digest),
+            ("license", license_id),
+        ):
+            if value:
+                record[field] = value
         tmp = ref.with_suffix(".tmp")
-        tmp.write_text(sha256.lower())
+        tmp.write_text(json.dumps(record, sort_keys=True))
         tmp.replace(ref)
 
     # -- maintenance -----------------------------------------------------

@@ -10,6 +10,7 @@ bytes pulled off the underlying file.
 
 from __future__ import annotations
 
+import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -306,3 +307,61 @@ class TestEmptyAndHeaderOnlyBundles:
             reader.read_header()
             assert list(reader.iter_artifacts()) == []
             assert list(reader.iter_artifacts()) == []
+
+
+class TestLargeMemberSupport:
+    """A single safetensors shard routinely exceeds 8 GiB.
+
+    That is the old ustar limit, and a bundle writer using it would fail with
+    "overflow in number field" on exactly the models this tool exists for. The
+    code uses PAX, which handles it, and PAX is also Python's default - but an
+    invariant this important should not rest on a default staying put.
+
+    Asserted on the encoded header rather than by writing the bytes: the point
+    is the size field, and materialising 10 GiB to prove it would be absurd.
+    """
+
+    #: Comfortably past the ustar ceiling of 8 GiB.
+    HUGE = 10 * 1024**3
+
+    def test_the_writer_uses_a_format_that_permits_huge_members(self, tmp_path: Path) -> None:
+        writer = BundleWriter(tmp_path / "b.offlineai")
+        try:
+            assert writer._tar.format == tarfile.PAX_FORMAT
+        finally:
+            writer.abort()
+
+    def test_a_ten_gibibyte_member_encodes(self) -> None:
+        info = tarfile.TarInfo("model-00001-of-00008.safetensors")
+        info.size = self.HUGE
+        assert info.tobuf(tarfile.PAX_FORMAT)
+
+    def test_the_old_format_would_have_refused_it(self) -> None:
+        """Establishes that the previous assertion is meaningful."""
+        info = tarfile.TarInfo("model-00001-of-00008.safetensors")
+        info.size = self.HUGE
+        with pytest.raises(ValueError, match="overflow"):
+            info.tobuf(tarfile.USTAR_FORMAT)
+
+    def test_a_huge_size_round_trips_through_the_manifest(self) -> None:
+        """The manifest must also carry a size past 2^32 without truncating."""
+        manifest = Manifest.model_validate(
+            {
+                "formatVersion": FORMAT_VERSION,
+                "package": {"name": "big", "version": "1.0.0"},
+                "createdAt": datetime(2026, 9, 22, tzinfo=UTC),
+                "platforms": ["linux/amd64"],
+                "artifacts": [
+                    {
+                        "id": "shard",
+                        "type": "model",
+                        "path": "artifacts/models/m/shard.safetensors",
+                        "size": self.HUGE,
+                        "sha256": "a" * 64,
+                    }
+                ],
+            }
+        )
+        restored = Manifest.from_yaml(manifest.to_yaml())
+        assert restored.artifacts[0].size == self.HUGE
+        assert restored.total_size == self.HUGE

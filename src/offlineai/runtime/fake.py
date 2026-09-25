@@ -41,6 +41,20 @@ class _Container:
     exit_code: int | None = None
 
 
+def _digest_for(reference: str) -> str:
+    """The digest a registry would report for this reference.
+
+    An image referenced by digest reports *that* digest - real Docker returns
+    the same RepoDigest however you named the image. Deriving it from the
+    reference string instead made a build that pulled `repo@sha256:abc` report
+    a different digest than one that pulled `repo:tag`, which looked exactly
+    like a package drifting when nothing had changed.
+    """
+    if "@sha256:" in reference:
+        return reference.split("@", 1)[1]
+    return "sha256:" + sha256_bytes(reference.encode())
+
+
 class FakeRuntime:
     kind: ClassVar[str] = "fake"
 
@@ -79,7 +93,7 @@ class FakeRuntime:
         self._maybe_fail("pull", reference)
         info = ImageInfo(
             reference=reference,
-            digest="sha256:" + sha256_bytes(reference.encode()),
+            digest=_digest_for(reference),
             image_id="sha256:" + sha256_bytes(f"id:{reference}".encode()),
             size=1024 * 1024,
         )

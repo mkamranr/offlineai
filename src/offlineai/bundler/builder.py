@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from offlineai import __version__, layout
 from offlineai.artifacts.base import (
@@ -49,6 +49,13 @@ from offlineai.runtime.base import ContainerRuntime
 from offlineai.runtime.docker import DockerRuntime
 from offlineai.sbom.cyclonedx import license_report
 from offlineai.sbom.cyclonedx import to_json as sbom_json
+from offlineai.schema.lockfile import (
+    LOCK_FILENAME,
+    LockedArtifact,
+    LockedPackage,
+    LockedSource,
+    Lockfile,
+)
 from offlineai.schema.manifest import (
     ArtifactType,
     BuilderInfo,
@@ -59,9 +66,10 @@ from offlineai.schema.manifest import (
     ManifestPackage,
     Requirements,
 )
-from offlineai.schema.package import ModelSource, Package
+from offlineai.schema.package import ImageReference, ModelSource, Package
 from offlineai.security.secrets import scan_for_secrets
 from offlineai.security.signing import load_private_key, sign_manifest
+from offlineai.utils.fs import atomic_write_text
 from offlineai.utils.hashing import sha256_file
 
 __all__ = ["BundleBuilder"]
@@ -69,6 +77,15 @@ __all__ = ["BundleBuilder"]
 logger = get_logger("bundler.builder")
 
 StepHook = Callable[[BuildStep], None]
+
+#: How a build treats offlineai.lock.
+#:
+#:   refresh  apply existing pins, then write the lock back (the default,
+#:            so repeated builds are stable without anyone asking)
+#:   locked   apply pins and fail on any drift; never writes
+#:   update   ignore existing pins, re-resolve, write the result
+#:   none     neither read nor write
+LockMode = Literal["refresh", "locked", "update", "none"]
 
 _STEPS = (
     "Validating package definition",
@@ -96,6 +113,7 @@ class BundleBuilder:
         runtime: ContainerRuntime | None = None,
         reporter: ProgressReporter | None = None,
         workers: int | None = None,
+        lock_mode: LockMode = "refresh",
     ) -> None:
         self.settings = settings
         self._container_runtime = runtime
@@ -103,6 +121,9 @@ class BundleBuilder:
         # A CLI flag wins over the configured value, which wins over the
         # conservative default section 45 asks for.
         self.workers = workers or settings.downloads.workers
+        self.lock_mode: LockMode = lock_mode
+        self._lock: Lockfile | None = None
+        self._locked_sources: list[LockedSource] = []
         self.cache = ArtifactCache(settings.cache_dir)
         self._on_step = on_step
         self._sources: dict[str, ArtifactSource] = sources or {}
@@ -144,6 +165,12 @@ class BundleBuilder:
             step.detail = "none found"
 
         _reject_unsupported(package)
+
+        # Read the existing lock before anything resolves, so its pins can
+        # constrain resolution rather than merely be checked afterwards. That
+        # distinction is the whole point: checking after the fact tells you a
+        # build drifted; pinning stops it drifting.
+        self._lock = self._load_lock(definition_path)
 
         if dry_run:
             # Validate everything that is cheap to check and stop before the
@@ -200,6 +227,10 @@ class BundleBuilder:
                 package, resolved, definition_hash, compression=compression
             )
 
+        # Fail a drifted --locked build here, before anything large is
+        # written.
+        self._verify_lock(package, definition_hash, resolved)
+
         # 9 - archive. The SBOM and signature are written into the header
         # here, which is free; signing afterwards would mean rewriting the
         # whole archive to insert 64 bytes.
@@ -236,6 +267,8 @@ class BundleBuilder:
         with self._step(10) as step:
             report = verify_bundle(bundle_path)
             step.detail = f"{report.artifacts_verified} artifact(s)"
+
+        self._write_lock(package, definition_path, definition_hash, resolved)
 
         return BuildResult(
             package=package.metadata.name,
@@ -311,15 +344,34 @@ class BundleBuilder:
         for model in package.models:
             source_kind = model.source.type
             source = self._source_for(source_kind, base_dir)
+            locator = _locator_for(model.source)
+            options = _source_options(model.source)
+            # A pinned revision replaces whatever the definition asked for.
+            # `main` moves; the commit it resolved to last time does not.
+            pin = self._pin_for(model.name, locator)
+            if pin and source_kind == "huggingface":
+                options["revision"] = pin
+
             ref = SourceRef(
                 kind=source_kind,
-                locator=_locator_for(model.source),
+                locator=locator,
                 name=model.name,
                 artifact_type=ArtifactType.MODEL,
-                options=_source_options(model.source),
+                options=options,
             )
             license_id = _license_for(source, model.source)
-            for request in source.expand(ref):
+            expanded = source.expand(ref)
+            self._record_source(
+                model.name,
+                source_kind,
+                locator,
+                pin=(
+                    str(expanded[0].metadata.get("revision_resolved"))
+                    if expanded and expanded[0].metadata.get("revision_resolved")
+                    else None
+                ),
+            )
+            for request in expanded:
                 jobs.append((source, request))
                 if license_id is not None:
                     licenses[request.id] = license_id
@@ -386,6 +438,13 @@ class BundleBuilder:
                     platform=container.platform,
                 )
 
+            # A tag is mutable. If the lock recorded a digest for this
+            # container, fetch that exact image instead.
+            declared = reference
+            pin = self._pin_for(container.name, declared)
+            if pin and not container.dockerfile:
+                reference = f"{ImageReference.parse(reference).repository}@{pin}"
+
             ref = SourceRef(
                 kind="oci",
                 locator=reference,
@@ -394,7 +453,9 @@ class BundleBuilder:
                 options={"platform": container.platform},
             )
             for request in source.expand(ref):
-                out.append(self._fetch(source, request))
+                resolved = self._fetch(source, request)
+                out.append(resolved)
+                self._record_source(container.name, "oci", declared, pin=resolved.digest)
 
         return out
 
@@ -435,6 +496,120 @@ class BundleBuilder:
             self._python_target = (python_version, target_platform)
         return out
 
+    # -- lock file (section 35) ------------------------------------------
+
+    def _load_lock(self, definition_path: Path) -> Lockfile | None:
+        """Read offlineai.lock, unless this build is meant to ignore it."""
+        if self.lock_mode in ("none", "update"):
+            return None
+        path = definition_path.parent / LOCK_FILENAME
+        if not path.is_file():
+            if self.lock_mode == "locked":
+                raise InvalidPackageError(
+                    f"--locked was requested but {LOCK_FILENAME} does not exist",
+                    details={"Looked for": str(path)},
+                    action="Build once without --locked to generate it, then commit "
+                    "it alongside the package definition.",
+                )
+            return None
+        try:
+            return Lockfile.from_yaml(path.read_text())
+        except Exception as exc:
+            raise InvalidPackageError(
+                f"{path} is not a readable lock file",
+                details={"Detail": str(exc)},
+                action="Delete it and rebuild to regenerate, or fix it by hand.",
+            ) from exc
+
+    def _pin_for(self, name: str, locator: str) -> str | None:
+        if self._lock is None:
+            return None
+        return self._lock.pin_for(name, locator=locator)
+
+    def _record_source(self, name: str, kind: str, locator: str, *, pin: str | None) -> None:
+        self._locked_sources.append(LockedSource(name=name, kind=kind, locator=locator, pin=pin))
+
+    def _current_lock(
+        self,
+        package: Package,
+        definition_hash: str,
+        resolved: list[ResolvedArtifact],
+    ) -> Lockfile:
+        return Lockfile(
+            formatVersion="1",
+            package=LockedPackage(name=package.metadata.name, version=package.metadata.version),
+            generatedAt=datetime.now(UTC),
+            packageDefinitionSha256=definition_hash,
+            sources=self._locked_sources,
+            artifacts=[
+                LockedArtifact(
+                    path=a.request.bundle_path,
+                    type=a.request.artifact_type.value,
+                    sha256=a.sha256,
+                    size=a.size,
+                    version=(
+                        str(a.request.metadata["version"])
+                        if a.request.metadata.get("version")
+                        else None
+                    ),
+                    digest=a.digest,
+                )
+                for a in resolved
+            ],
+        )
+
+    def _verify_lock(
+        self,
+        package: Package,
+        definition_hash: str,
+        resolved: list[ResolvedArtifact],
+    ) -> None:
+        """Fail a --locked build that has drifted.
+
+        Called before the archive is written, not after. Everything needed to
+        detect drift is known once resolution finishes, and writing 62 GB
+        before discovering the build was not the one asked for wastes both the
+        time and the disk.
+        """
+        if self.lock_mode != "locked" or self._lock is None:
+            return
+
+        current = self._current_lock(package, definition_hash, resolved)
+        drift = self._lock.drift_against(current.artifacts)
+        if drift:
+            raise MissingArtifactError(
+                f"this build does not match {LOCK_FILENAME}",
+                details={"Drift": "\n".join(drift)},
+                action="Something the package depends on has changed since the "
+                "lock was written. Review the differences above. If they are "
+                "intended, rebuild with --update-lock and commit the new lock.",
+            )
+
+    def _write_lock(
+        self,
+        package: Package,
+        definition_path: Path,
+        definition_hash: str,
+        resolved: list[ResolvedArtifact],
+    ) -> None:
+        """Record what this build resolved to.
+
+        A --locked build never writes: its job is to prove the file on disk
+        still describes reality, and rewriting it would destroy the evidence
+        it was asked to check.
+        """
+        if self.lock_mode in ("none", "locked"):
+            return
+
+        current = self._current_lock(package, definition_hash, resolved)
+        path = definition_path.parent / LOCK_FILENAME
+        try:
+            atomic_write_text(path, current.to_yaml())
+        except OSError as exc:
+            # A read-only source tree is a legitimate way to build. Losing the
+            # lock is worth a warning, not a failed build.
+            self._warnings.append(f"could not write {LOCK_FILENAME}: {exc}")
+
     def _runtime(self) -> ContainerRuntime:
         if self._container_runtime is None:
             self._container_runtime = DockerRuntime()
@@ -449,6 +624,9 @@ class BundleBuilder:
                 local_path=cached.path,
                 sha256=cached.sha256,
                 size=cached.size,
+                source=cached.source,
+                digest=cached.digest,
+                license=cached.license,
                 cached=True,
             )
         return source.fetch(request, self.cache)

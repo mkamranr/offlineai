@@ -73,7 +73,7 @@ class HttpSource:
             )
             entry = cache.store_file(result.path, move=True)
 
-        cache.put_ref(self.kind, request.cache_key, entry.sha256)
+        cache.put_ref(self.kind, request.cache_key, entry.sha256, source=request.locator)
         return ResolvedArtifact(
             request=request,
             local_path=entry.path,

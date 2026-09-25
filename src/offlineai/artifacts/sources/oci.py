@@ -106,7 +106,7 @@ class OciSource:
             self.runtime.save([reference], staging)
             entry = cache.store_file(staging, move=True)
 
-        cache.put_ref(self.kind, cache_key, entry.sha256)
+        cache.put_ref(self.kind, cache_key, entry.sha256, source=reference, digest=info.digest)
         return ResolvedArtifact(
             request=request,
             local_path=entry.path,

@@ -1,0 +1,19 @@
+artifacts:
+- path: artifacts/models/scoring-model/config.json
+  sha256: 45de92e8dac76511c0e09bab54526d35946f967bbd41e34ec3cdb00aaa824f42
+  size: 60
+  type: model
+- path: artifacts/models/scoring-model/weights.bin
+  sha256: e11360251d1173650cdcd20f111d8f1ca2e412f572e8b36a4dc067121c1799b8
+  size: 32768
+  type: model
+formatVersion: '1'
+generatedAt: '2026-09-25T11:04:25.122301Z'
+package:
+  name: simple-python
+  version: 1.0.0
+packageDefinitionSha256: ede1d869ae3a67163d89ec771fb7195c10b360aa276ec46d91b0155fdd92dea7
+sources:
+- kind: local
+  locator: ./model
+  name: scoring-model

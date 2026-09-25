@@ -59,7 +59,11 @@ class LocalSource:
         if not source.is_file():
             raise SourceError(f"{source} disappeared during the build")
         entry = cache.store_file(source)
-        cache.put_ref(self.kind, request.cache_key, entry.sha256)
+        # Deliberately no put_ref. A local file's cache key is its path, and a
+        # path does not change when its content does - so a developer editing
+        # a model and rebuilding would silently get the previous bytes back.
+        # store_file already deduplicates by content, so the reference index
+        # adds nothing here but the chance to be wrong.
         return ResolvedArtifact(
             request=request,
             local_path=entry.path,

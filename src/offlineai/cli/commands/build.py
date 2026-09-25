@@ -7,11 +7,12 @@ from typing import Annotated
 
 import typer
 
-from offlineai.bundler.builder import BundleBuilder
+from offlineai.bundler.builder import BundleBuilder, LockMode
 from offlineai.bundler.results import BuildStep
 from offlineai.cli.main import Context
 from offlineai.cli.main import register as _register
 from offlineai.cli.progress import select_reporter
+from offlineai.errors import InvalidPackageError
 from offlineai.schema.manifest import Compression
 
 
@@ -63,6 +64,26 @@ def build(
             max=64,
         ),
     ] = None,
+    locked: Annotated[
+        bool,
+        typer.Option(
+            "--locked",
+            help="Require offlineai.lock to describe this build exactly. Fails on "
+            "any drift and never rewrites the lock. Use this in CI.",
+        ),
+    ] = False,
+    update_lock: Annotated[
+        bool,
+        typer.Option(
+            "--update-lock",
+            help="Ignore the existing pins, re-resolve everything, and write the "
+            "result. This is how you deliberately take a newer version.",
+        ),
+    ] = False,
+    no_lock: Annotated[
+        bool,
+        typer.Option("--no-lock", help="Neither read nor write offlineai.lock."),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -86,12 +107,28 @@ def build(
     def on_step(step: BuildStep) -> None:
         output.build_step(step.index, step.total, step.name, step.status, step.detail)
 
+    if sum((locked, update_lock, no_lock)) > 1:
+        raise InvalidPackageError(
+            "--locked, --update-lock and --no-lock are mutually exclusive",
+            action="Pick one. Without any of them a build applies the existing "
+            "pins and then refreshes the lock, which is what you usually want.",
+        )
+    lock_mode: LockMode = (
+        "locked" if locked else "update" if update_lock else "none" if no_lock else "refresh"
+    )
+
     reporter = select_reporter(
         json=output.fmt.json,
         quiet=output.fmt.quiet,
         is_terminal=output.console.is_terminal,
     )
-    builder = BundleBuilder(context.settings, on_step=on_step, reporter=reporter, workers=workers)
+    builder = BundleBuilder(
+        context.settings,
+        on_step=on_step,
+        reporter=reporter,
+        workers=workers,
+        lock_mode=lock_mode,
+    )
 
     output.line(f"Building package from {target}")
     output.line()

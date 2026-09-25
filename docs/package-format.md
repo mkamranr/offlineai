@@ -179,6 +179,56 @@ and the schema rejects an entry that tries to supply one.
 Determines start order. Cycles are detected and reported; services then start
 in declaration order rather than deadlocking.
 
+## offlineai.lock
+
+A successful build writes `offlineai.lock` next to `offlineai.yaml`. **Commit
+it.** The manifest describes a bundle that *was* built; the lock pins what a
+*future* build resolves to.
+
+```yaml
+formatVersion: "1"
+package: {name: qwen-vllm, version: 1.0.0}
+sources:
+  - name: model
+    kind: huggingface
+    locator: Qwen/Qwen3-30B
+    pin: 5a7c1b4e9f2d8c3a1b0e7f6d5c4b3a2918273645   # the commit `main` resolved to
+  - name: vllm
+    kind: oci
+    locator: vllm/vllm-openai:v0.6.3
+    pin: sha256:abc123...                          # the image digest
+artifacts:
+  - path: artifacts/models/model/config.json
+    type: model
+    sha256: ...
+```
+
+`sources` is the half that matters. Those pins are fed **back into** the next
+resolution, so `revision: main` fetches the recorded commit rather than
+wherever the branch has moved to, and a re-tagged `vllm:v0.6.3` is pulled by
+digest rather than by tag. A lock that were only checked afterwards would tell
+you a build drifted; one whose pins constrain resolution stops it drifting.
+
+| | |
+|---|---|
+| *(default)* | apply the pins, then refresh the lock |
+| `--locked` | apply the pins and fail on any drift. Never writes. Use in CI. |
+| `--update-lock` | ignore the pins, re-resolve, write the result |
+| `--no-lock` | neither read nor write |
+
+A `--locked` build that has drifted fails **before** the archive is written,
+and names what changed:
+
+```
+Drift:
+artifacts/models/demo/config.json: digest changed, 7ea87318… -> 1be08cac…
+```
+
+Container images are compared on their registry digest rather than the bytes
+of the tar. `docker save` is not byte-reproducible — saving the same image by
+tag and by digest gives different archives — so comparing tar bytes would
+report drift on an image that never changed.
+
 ## Validating without building
 
 ```bash

@@ -129,6 +129,9 @@ def _fetch_one(job: FetchJob, cache: ArtifactCache, reporter: ProgressReporter) 
             local_path=cached.path,
             sha256=cached.sha256,
             size=cached.size,
+            source=cached.source,
+            digest=cached.digest,
+            license=cached.license,
             cached=True,
         )
 

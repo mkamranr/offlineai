@@ -125,6 +125,8 @@ class HuggingFaceSource:
 
         _warn_if_shards_incomplete(selected, repo)
 
+        resolved = self.resolved_revision(repo, revision)
+
         return [
             ArtifactRequest(
                 id=f"model-{ref.name}-{file.path}".replace("/", "-"),
@@ -137,12 +139,26 @@ class HuggingFaceSource:
                 metadata={
                     "repo": repo,
                     "revision": revision,
+                    "revision_resolved": resolved or revision,
                     "file": file.path,
                     "model": ref.name,
                 },
             )
             for file in selected
         ]
+
+    def resolved_revision(self, repo: str, revision: str) -> str | None:
+        """The commit a revision name resolved to.
+
+        `main` moves. Recording the commit is what lets a later build fetch
+        the same weights rather than whatever the branch points at now.
+        """
+        try:
+            info = self._hf_api().repo_info(repo_id=repo, revision=revision)
+        except Exception:  # noqa: BLE001 - a missing pin must not fail a build
+            return None
+        sha = getattr(info, "sha", None)
+        return str(sha) if sha else None
 
     def list_files(self, repo: str, revision: str) -> list[RepoFile]:
         """Enumerate a repository, with sizes and digests where available."""
@@ -208,13 +224,14 @@ class HuggingFaceSource:
             )
             entry = cache.store_file(result.path, move=True)
 
-        cache.put_ref(self.kind, request.cache_key, entry.sha256)
+        origin = f"hf://{repo}@{revision}/{filename}"
+        cache.put_ref(self.kind, request.cache_key, entry.sha256, source=origin)
         return ResolvedArtifact(
             request=request,
             local_path=entry.path,
             sha256=entry.sha256,
             size=entry.size,
-            source=f"hf://{repo}@{revision}/{filename}",
+            source=origin,
         )
 
     def license_for(self, repo: str, revision: str = "main") -> str | None:

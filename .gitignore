@@ -16,7 +16,9 @@ venv/
 htmlcov/
 coverage.xml
 
-# OfflineAI runtime data — never commit bundles or caches
+# OfflineAI runtime data — never commit bundles or caches.
+# Note offlineai.lock is NOT ignored: it pins what a rebuild resolves to
+# and belongs in version control.
 *.offlineai
 .offlineai/
 /offlineai-data/
