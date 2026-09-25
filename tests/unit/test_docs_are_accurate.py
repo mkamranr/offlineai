@@ -169,17 +169,13 @@ class TestEveryFeatureIsDocumented:
     """
 
     def _all_docs(self) -> str:
-        return "\n".join(
-            path.read_text()
-            for path in DOC_FILES
-            if path.name not in EXCLUDED
-        )
+        return "\n".join(path.read_text() for path in DOC_FILES if path.name not in EXCLUDED)
 
     def test_every_registered_command_is_documented(self, commands: set[str]) -> None:
         text = self._all_docs()
         undocumented = sorted(c for c in commands if c not in text)
-        assert not undocumented, (
-            "commands that exist but appear in no document: " + ", ".join(undocumented)
+        assert not undocumented, "commands that exist but appear in no document: " + ", ".join(
+            undocumented
         )
 
     #: Flags that change what the tool *does*, as opposed to how it prints.
@@ -233,8 +229,7 @@ class TestTheArchitectureMapIsCurrent:
         mapped = self._module_map()
         missing = [p for p in packages if f"`{p}/`" not in mapped]
         assert not missing, (
-            "packages under src/offlineai with no row in the module map: "
-            + ", ".join(missing)
+            "packages under src/offlineai with no row in the module map: " + ", ".join(missing)
         )
 
     def test_top_level_modules_that_carry_a_subsystem_are_named(self) -> None:
@@ -247,9 +242,7 @@ class TestTheArchitectureMapIsCurrent:
     def test_the_schema_row_lists_what_schema_actually_holds(self) -> None:
         """The row read "offlineai.yaml, the manifest, overrides" for two
         features after the lock file and profiles were added to that package."""
-        row = next(
-            line for line in self._module_map().splitlines() if "`schema/`" in line
-        )
+        row = next(line for line in self._module_map().splitlines() if "`schema/`" in line)
         for expected in ("lock", "profile"):
             assert expected in row.lower(), (
                 f"the schema/ row does not mention {expected}: {row.strip()}"
