@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="OfflineAI">
+  <title>OfflineAI</title>
+  <desc>A sealed bundle straddling a dashed boundary: the air gap.</desc>
+  <path d="M23 3V61" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" stroke-dasharray="5 5.5"/>
+  <rect x="8" y="16" width="48" height="32" rx="6" fill="#1B4965"/>
+  <rect x="8" y="27.5" width="48" height="5.5" fill="#5FA8D3"/>
+</svg>

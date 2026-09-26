@@ -64,8 +64,8 @@ dev = [
 offlineai = "offlineai.cli.main:run"
 
 [project.urls]
-Homepage = "https://github.com/offlineai/offlineai"
-Documentation = "https://github.com/offlineai/offlineai/tree/main/docs"
+Homepage = "https://github.com/mkamranr/offlineai"
+Documentation = "https://github.com/mkamranr/offlineai/tree/main/docs"
 
 # Artifact source plugins are discovered through this entry-point group, so
 # third parties can add sources without patching the CLI (spec section 49).

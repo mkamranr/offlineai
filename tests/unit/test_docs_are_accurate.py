@@ -334,3 +334,67 @@ def _subset_differences(shown: Any, real: Any, path: str) -> list[str]:
         return out
 
     return [] if shown == real else [f"{path}: README shows {shown!r}, example has {real!r}"]
+
+
+class TestTheFrontPageIsIntact:
+    """The README is the first thing anyone sees, so its assets must exist.
+
+    ``TestInternalLinksResolve`` checks ``[text](path)`` markdown links, but the
+    logo is referenced through raw HTML -- ``<img src>`` and ``<source srcset>``
+    inside a ``<picture>`` -- which that pattern does not match. A logo that
+    404s is the single most visible defect this project could ship, and until
+    now nothing would have caught it.
+    """
+
+    #: ``src=`` and ``srcset=`` on any HTML element, in any tracked document.
+    _IMAGE_REF = re.compile(r"(?:src|srcset)=\"(?!https?://|data:)([^\"]+)\"")
+
+    def test_every_referenced_image_exists(self) -> None:
+        missing: list[str] = []
+        for path in DOC_FILES:
+            if path.name in EXCLUDED:
+                continue
+            for target in self._IMAGE_REF.findall(path.read_text()):
+                if not (path.parent / target).resolve().exists():
+                    missing.append(f"{path.relative_to(PROJECT_ROOT)} -> {target}")
+        assert not missing, "referenced images that do not exist:\n" + "\n".join(missing)
+
+    def test_the_readme_shows_a_logo(self) -> None:
+        readme = (PROJECT_ROOT / "README.md").read_text()
+        assert self._IMAGE_REF.search(readme), (
+            "the README references no local image; the logo has been dropped"
+        )
+
+    @pytest.mark.parametrize(
+        "name", ["logo.svg", "logo-dark.svg", "icon.svg"], ids=lambda n: str(n)
+    )
+    def test_each_asset_is_well_formed_and_scalable(self, name: str) -> None:
+        """A missing ``viewBox`` renders at a fixed size and ignores ``width=``."""
+        import xml.etree.ElementTree as ElementTree
+
+        path = PROJECT_ROOT / "assets" / name
+        assert path.exists(), f"assets/{name} is missing"
+        # S314 warns about untrusted XML. These three files are tracked in this
+        # repository and are exactly what the check exists to validate.
+        root = ElementTree.parse(path).getroot()  # noqa: S314
+        assert root.tag.endswith("svg"), f"assets/{name} is not an <svg>"
+        assert "viewBox" in root.attrib, f"assets/{name} has no viewBox, so it will not scale"
+
+    def test_the_readme_says_how_to_install_the_tool(self) -> None:
+        """It did not, for a long time. A visitor could not tell how to start."""
+        readme = (PROJECT_ROOT / "README.md").read_text()
+        assert "## Install" in readme, "the README has no Install section"
+        assert "pip install" in readme, "the Install section never runs pip install"
+
+    def test_the_status_section_does_not_overclaim(self) -> None:
+        """The tool reports SKIPPED rather than guessing; the README should too.
+
+        Anyone evaluating this needs to know a real model has been packaged but
+        never installed. Losing that paragraph would turn an honest README into
+        a misleading one.
+        """
+        readme = (PROJECT_ROOT / "README.md").read_text()
+        status = readme.split("## Status", 1)[1]
+        assert "Not yet demonstrated" in status, (
+            "the Status section no longer states what is unproven"
+        )
