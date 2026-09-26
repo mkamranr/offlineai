@@ -20,6 +20,9 @@ coverage.xml
 # Note offlineai.lock is NOT ignored: it pins what a rebuild resolves to
 # and belongs in version control.
 *.offlineai
+# Lock files under examples/ are artifacts of running the test suite,
+# not a recommendation: your own offlineai.lock SHOULD be committed.
+examples/*/offlineai.lock
 .offlineai/
 /offlineai-data/
 /out/

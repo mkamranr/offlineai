@@ -64,6 +64,159 @@ builder is the wrong machine. A target profile describes the destination
 instead. Capture one from the real hardware with
 `offlineai doctor --save-profile`.
 
+## Example
+
+Everything below is real output from `examples/hello-ai`, captured on Linux.
+It is the smallest complete package — a containerised HTTP service, no model,
+no GPU — and it builds in about a minute.
+
+### What you write
+
+`offlineai.yaml`, beside your Dockerfile:
+
+```yaml
+apiVersion: offlineai/v1
+kind: Package
+
+metadata:
+  name: hello-ai
+  version: 1.0.0
+
+containers:
+  - name: app
+    image: python:3.12-slim     # the BASE image...
+    dockerfile: Dockerfile      # ...because this builds a new one, and that is
+                                #    what gets packaged. Not pulled on the target.
+
+services:
+  - name: app
+    container: app
+    ports: ["8000:8000"]
+
+install:
+  healthcheck:                  # what `install` waits on before reporting success
+    command:                    # runs INSIDE the container - python:3.12-slim
+      - python                  # has no curl, so use what the image has
+      - -c
+      - "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"
+    retries: 12
+```
+
+### On the connected builder
+
+```console
+$ offlineai build examples/hello-ai
+
+[1/10] Validating package definition        OK
+[2/10] Scanning for secrets                 OK  none found
+[3/10] Resolving models                     OK  none declared
+[4/10] Resolving container images           OK  1 image(s)
+[5/10] Resolving Python dependencies        OK  none declared
+[6/10] Resolving OS packages                OK  none declared
+[7/10] Calculating checksums                OK  1 artifact(s)
+[8/10] Generating manifest                  OK
+[9/10] Creating bundle                      OK  hello-ai-1.0.0.offlineai
+[10/10] Verifying bundle                    OK  1 artifact(s)
+
+Bundle created:
+
+  hello-ai-1.0.0.offlineai
+
+Size:   131.6 MB
+SHA256: 32e9074ba12bc20429fc62f683cff84e19fbcfb0106e79c9f31af1e0ffb0ed09
+```
+
+Copy that one file to the isolated machine, and compare the SHA-256 after the
+transfer.
+
+Your digest will differ from the one above: this package builds its image from
+a Dockerfile, and `docker build` is not byte-reproducible. That is also why
+OfflineAI compares images on their registry digest rather than on the bytes of
+the saved tar — see [`offlineai.lock`](docs/package-format.md#offlineailock),
+which pins the digest so a rebuild resolves to the same image.
+
+### On the air-gapped target
+
+To make the point honestly, delete the image first — so what starts there can
+only have come out of the bundle:
+
+```console
+$ docker rmi -f offlineai/hello-ai-app:1.0.0
+Untagged: offlineai/hello-ai-app:1.0.0
+
+$ offlineai verify hello-ai-1.0.0.offlineai
+Manifest:  OK
+Container: OK
+Checksums: OK  (1 artifact(s))
+SBOM:      OK
+Signature: SKIPPED  (bundle is unsigned)
+
+Result: VERIFIED
+
+$ offlineai import hello-ai-1.0.0.offlineai
+Imported hello-ai 1.0.0
+
+  Artifacts:   1
+  Stored:      131.5 MB
+
+$ offlineai install hello-ai --strict-offline
+CPU architecture:      OK  amd64
+Operating system:      OK  linux 6.4.16-linuxkit
+Disk space:            OK  needs 369.7 MB, 2.8 GB available
+Container runtime:     OK  24.0.6
+GPU:                   SKIPPED  not required
+Container images:      OK  1 image(s) loaded
+Models:                SKIPPED  none declared
+System packages:       SKIPPED  none declared
+Python dependencies:   SKIPPED  none declared
+Runtime configuration: OK
+Services:              OK  1 started
+
+Installation: install-20260926-001
+State:        COMPLETED
+
+Endpoints:
+  http://localhost:8000
+
+Requirements satisfied. Runtime success is not guaranteed.
+```
+
+`--strict-offline` is not decoration: sockets are blocked in-process, pip and
+Hugging Face are pointed at nothing, proxies are cleared, and containers run
+`--pull never`. Nothing can quietly fetch a missing piece.
+
+And it serves:
+
+```console
+$ offlineai status hello-ai
+Status: RUNNING
+
+Services:
+  app  RUNNING
+
+Endpoint:
+  http://localhost:8000
+
+$ curl localhost:8000/health
+{"status": "healthy"}
+```
+
+Note what every `SKIPPED` above says: *why*. A check that could not be
+evaluated is never reported as passed.
+
+### At scale
+
+[`examples/qwen-vllm`](examples/qwen-vllm) is the same shape with a model and a
+GPU requirement added — Qwen3-30B on vLLM, around 62 GB. The commands are
+identical; only the numbers change, and `inspect` still reads about ten
+kilobytes off the front of the file regardless.
+
+```bash
+offlineai build examples/qwen-vllm --sign-key signing-key.pem
+offlineai check qwen-vllm-1.0.0.offlineai --profile h100-server.yaml
+offlineai install qwen-vllm --gpus 0,1 --strict-offline
+```
+
 ## The guarantee
 
 > A successful build means the bundle contains everything required for the declared
@@ -131,7 +284,7 @@ branch on them.
 | | |
 |---|---|
 | [`simple-python`](examples/simple-python) | Local files, no container. The smallest useful package. |
-| [`hello-ai`](examples/hello-ai) | A containerised HTTP service. Builds in under a minute. |
+| [`hello-ai`](examples/hello-ai) | A containerised HTTP service. Builds in under a minute — [walked through above](#example). |
 | [`whisper`](examples/whisper) | Speech-to-text, ~8 GB |
 | [`qwen-vllm`](examples/qwen-vllm) | Qwen3-30B on vLLM with an OpenAI-compatible API, ~62 GB |
 | [`rag-stack`](examples/rag-stack) | vLLM + Qdrant + Redis + app, three models, ~14 GB |

@@ -35,7 +35,13 @@ from offlineai.progress import ProgressReporter
 from offlineai.schema.manifest import ArtifactType
 from offlineai.utils.proc import run
 
-__all__ = ["PLATFORM_TAGS", "PythonSource", "WheelInfo", "wheel_tags"]
+__all__ = [
+    "PLATFORM_TAGS",
+    "PythonSource",
+    "WheelInfo",
+    "is_effectively_empty",
+    "wheel_tags",
+]
 
 logger = get_logger("artifacts.pypi")
 
@@ -124,7 +130,7 @@ class PythonSource:
                 "package definition.",
             )
 
-        if _is_effectively_empty(requirements):
+        if is_effectively_empty(requirements):
             logger.info("%s declares no requirements", requirements.name)
             return []
 
@@ -330,7 +336,7 @@ def _trim(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + "\n… (truncated)"
 
 
-def _is_effectively_empty(requirements: Path) -> bool:
+def is_effectively_empty(requirements: Path) -> bool:
     for line in requirements.read_text().splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):

@@ -36,7 +36,7 @@ from offlineai.artifacts.sources.http import HttpSource
 from offlineai.artifacts.sources.huggingface import HuggingFaceSource
 from offlineai.artifacts.sources.local import LocalSource
 from offlineai.artifacts.sources.oci import OciSource
-from offlineai.artifacts.sources.pypi import PythonSource
+from offlineai.artifacts.sources.pypi import PythonSource, is_effectively_empty
 from offlineai.bundler.archive import BundleWriter
 from offlineai.bundler.results import BuildResult, BuildStep, CheckStatus
 from offlineai.bundler.verifier import verify_bundle
@@ -471,6 +471,18 @@ class BundleBuilder:
 
         target_platform = f"{package.python.platform}/{package.python.architecture}"
         python_version = package.python.version or _current_python_version()
+
+        for requirements in package.python.requirements:
+            path = base_dir / requirements
+            if path.is_file() and is_effectively_empty(path):
+                # Declaring a requirements file that lists nothing is a
+                # leftover, and it makes the installer warn that dependencies
+                # are missing when there never were any.
+                self._warnings.append(
+                    f"{requirements} declares no requirements. Remove the "
+                    "'python:' block if this package has no dependencies; "
+                    "otherwise the installer will report them as missing."
+                )
 
         source = self._sources.get("pypi") or PythonSource()
         out: list[ResolvedArtifact] = []

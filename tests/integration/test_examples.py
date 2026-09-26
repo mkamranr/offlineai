@@ -111,7 +111,10 @@ class TestSmallExamplesActuallyBuild:
     def test_builds_and_verifies(self, example: str, tmp_path: Path) -> None:
         settings = load_settings(home=tmp_path / "home")
         settings.ensure_directories()
-        result = BundleBuilder(settings, runtime=FakeRuntime()).build(
+        # lock_mode="none": the builder writes offlineai.lock beside the
+        # definition, and these build the real examples in place. Without this
+        # the suite rewrites a tracked file on every run.
+        result = BundleBuilder(settings, runtime=FakeRuntime(), lock_mode="none").build(
             EXAMPLES / example, output=tmp_path / "dist"
         )
         assert Path(result.bundle_path).is_file()
@@ -125,8 +128,48 @@ class TestSmallExamplesActuallyBuild:
 
         settings = load_settings(home=tmp_path / "home")
         settings.ensure_directories()
-        result = BundleBuilder(settings, runtime=FakeRuntime()).build(
+        result = BundleBuilder(settings, runtime=FakeRuntime(), lock_mode="none").build(
             EXAMPLES / example, output=tmp_path / "dist"
         )
         skipped = [s.name for s in result.steps if s.status is CheckStatus.SKIPPED]
         assert skipped == [], f"{example} skipped: {skipped}"
+
+
+class TestTheSuiteDoesNotMutateTheRepository:
+    """A test that writes into the source tree is a bug.
+
+    The builder writes `offlineai.lock` beside the definition it built, and
+    these tests build the real examples in place — so an example's lock was
+    being rewritten on every run, and one was committed by accident through a
+    `git add -A`. Build artifacts do not belong in `examples/`.
+    """
+
+    def test_no_example_lock_files_are_tracked(self) -> None:
+        import subprocess
+
+        tracked = subprocess.run(  # noqa: S603
+            ["git", "ls-files", "examples/*/offlineai.lock"],
+            capture_output=True,
+            text=True,
+            cwd=EXAMPLES.parent,
+            check=False,
+        ).stdout.strip()
+        assert not tracked, (
+            "lock files under examples/ are build artifacts and churn on every "
+            f"test run; these are tracked:\n{tracked}"
+        )
+
+    @pytest.mark.parametrize("example", BUILDABLE)
+    def test_building_an_example_leaves_no_lock_behind(self, example: str, tmp_path: Path) -> None:
+        from offlineai.schema.lockfile import LOCK_FILENAME
+
+        lock = EXAMPLES / example / LOCK_FILENAME
+        existed = lock.exists()
+        settings = load_settings(home=tmp_path / "home")
+        settings.ensure_directories()
+        BundleBuilder(settings, runtime=FakeRuntime(), lock_mode="none").build(
+            EXAMPLES / example, output=tmp_path / "dist"
+        )
+        assert lock.exists() == existed, (
+            f"building {example} wrote {LOCK_FILENAME} into the source tree"
+        )

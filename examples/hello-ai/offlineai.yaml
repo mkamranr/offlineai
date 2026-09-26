@@ -23,13 +23,6 @@ containers:
     platform: linux/amd64
     dockerfile: Dockerfile
 
-python:
-  requirements:
-    - requirements.txt
-  version: "3.12"
-  platform: linux
-  architecture: amd64
-
 environment:
   # Belt and braces: even this trivial service declares that it must not
   # reach out at runtime.

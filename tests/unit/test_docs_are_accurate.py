@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -247,3 +248,89 @@ class TestTheArchitectureMapIsCurrent:
             assert expected in row.lower(), (
                 f"the schema/ row does not mention {expected}: {row.strip()}"
             )
+
+
+class TestTheReadmeExampleMatchesTheRealOne:
+    """The README walks through `examples/hello-ai`. If the example changes and
+    the README does not, the first thing a new user does — copy the README and
+    run it — produces something different from what the page promised.
+
+    Written after the README's YAML was first drafted with a `curl` healthcheck
+    when the real example uses a Python one-liner, precisely because
+    python:3.12-slim has no curl. The README version would not have worked.
+    """
+
+    def _readme_yaml(self) -> dict[str, Any]:
+        import re
+
+        import yaml
+
+        text = (PROJECT_ROOT / "README.md").read_text()
+        match = re.search(r"```yaml\n(apiVersion: offlineai/v1.*?)```", text, re.S)
+        assert match, "the README no longer shows an offlineai.yaml"
+        return yaml.safe_load(match.group(1))
+
+    def _real_yaml(self) -> dict[str, Any]:
+        import yaml
+
+        return yaml.safe_load(
+            (PROJECT_ROOT / "examples" / "hello-ai" / "offlineai.yaml").read_text()
+        )
+
+    def test_the_shown_yaml_is_a_valid_package(self) -> None:
+        """A README example that the schema would reject is worse than none."""
+        from offlineai.schema.package import Package
+
+        package = Package.model_validate(self._readme_yaml())
+        assert package.metadata.name == "hello-ai"
+
+    def test_everything_it_shows_agrees_with_the_real_example(self) -> None:
+        """A subset check, not equality: the README abridges deliberately —
+        omitting description, platform, interval_seconds — and should be free
+        to. What it does show has to be true."""
+        differences = _subset_differences(self._readme_yaml(), self._real_yaml(), "")
+        assert not differences, (
+            "the README example has drifted from examples/hello-ai:\n  " + "\n  ".join(differences)
+        )
+
+    def test_the_healthcheck_uses_a_command_the_image_has(self) -> None:
+        """python:3.12-slim ships no curl. A healthcheck the container cannot
+        run makes `install` fail after the workload has already started, which
+        is a confusing way to learn this."""
+        command = self._readme_yaml()["install"]["healthcheck"]["command"]
+        assert command[0] != "curl", (
+            "the shown healthcheck calls curl, which the declared base image does not contain"
+        )
+
+    def test_the_walkthrough_names_the_bundle_it_produces(self) -> None:
+        text = (PROJECT_ROOT / "README.md").read_text()
+        real = self._real_yaml()["metadata"]
+        expected = f"{real['name']}-{real['version']}.offlineai"
+        assert expected in text, f"the README does not mention {expected}"
+
+
+def _subset_differences(shown: Any, real: Any, path: str) -> list[str]:
+    """Every leaf present in ``shown`` must equal its counterpart in ``real``.
+
+    Keys absent from ``shown`` are fine — that is abridgement, not drift.
+    """
+    if isinstance(shown, dict):
+        if not isinstance(real, dict):
+            return [f"{path or '(root)'}: shown as a mapping, real is {type(real).__name__}"]
+        out: list[str] = []
+        for key, value in shown.items():
+            if key not in real:
+                out.append(f"{path}.{key}: in the README, absent from the example")
+            else:
+                out.extend(_subset_differences(value, real[key], f"{path}.{key}"))
+        return out
+
+    if isinstance(shown, list):
+        if not isinstance(real, list) or len(shown) > len(real):
+            return [f"{path}: list differs in shape"]
+        out = []
+        for index, item in enumerate(shown):
+            out.extend(_subset_differences(item, real[index], f"{path}[{index}]"))
+        return out
+
+    return [] if shown == real else [f"{path}: README shows {shown!r}, example has {real!r}"]
