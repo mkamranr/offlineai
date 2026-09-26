@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280" width="1280" height="1280">
+  <rect width="1280" height="1280" fill="#ffffff"/>
+  <rect y="320" width="1280" height="640" fill="#0F2A3D"/>
+  <g transform="translate(400,438) scale(3.2)">
+    <path d="M23 3V61" stroke="#6E7B8B" stroke-width="4" stroke-linecap="round" stroke-dasharray="5 5.5"/>
+    <rect x="8" y="16" width="48" height="32" rx="6" fill="#62B6CB"/>
+    <rect x="8" y="27.5" width="48" height="5.5" fill="#123A52"/>
+  </g>
+  <g font-family="ui-sans-serif, -apple-system, Helvetica, Arial, sans-serif" text-anchor="middle">
+    <text x="640" y="728" font-size="88" font-weight="700" letter-spacing="-2" fill="#E6EDF3">Offline<tspan fill="#62B6CB">AI</tspan></text>
+    <text x="640" y="780" font-size="30" font-weight="500" fill="#9AA7B4">Build online. Transfer once. Run offline.</text>
+    <text x="640" y="852" font-size="23" font-weight="400" fill="#7A8797">Package complete AI workloads for air-gapped environments.</text>
+  </g>
+</svg>
